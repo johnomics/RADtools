@@ -1,0 +1,408 @@
+#!/usr/bin/perl
+
+# Copyright 2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+#############################################################################
+
+# RADtags
+# Attempt to identify RAD tag clusters by checking pairs of consecutive
+# reads for high Hamming distances
+# Expects sorted reads as input
+
+# 03/08/10 Incorporated into RADtools
+
+use strict;
+use warnings;
+use Carp;
+use English;
+use Getopt::Long;
+use Data::Dumper;
+use List::Util qw[min max sum];
+use POSIX qw[ceil floor];
+
+# Autoflush output so reporting on progress works
+$| = 1;
+
+my $in_filename       = "";
+my $expected_tags     = 10000;
+my $quality_threshold = 20;
+my $read_threshold    = 4;
+
+my @bases = qw/A C G T/;
+
+my $options_okay = GetOptions(
+    'input=s'         => \$in_filename,
+    'expected_tags=i' => \$expected_tags,
+);
+
+croak
+"\nUsage: perl cluster_rad_reads_by_hamming_distance -i in_filename -e expected_tags\n"
+  if !$options_okay;
+
+croak "\nNo filename given - please supply a name for the -i option\n"
+  if ( $in_filename eq "" );
+
+open my $in_file, '<', $in_filename
+  or croak "Can't open $in_filename: $OS_ERROR!";
+
+# This calculates how many bases required to uniquely ID
+# this number of tags (reverse of 4^(expected_tags))
+# with a couple of extra orders of magnitude added
+# so that SNPs can be included in the same cluster
+my $threshold_distance = ceil( log($expected_tags) / log(4) );
+
+my $first_unique;
+my $unique_hash;
+my $read_length = 0;
+my $first_read  = get_read($in_file);
+my @cluster;
+
+if ( defined($first_read) ) {
+    $read_length  = length( $first_read->{r1s} );
+    $unique_hash  = get_unique( $in_file, $first_read );
+    $first_unique = $unique_hash->{uniq};
+    $first_read   = $unique_hash->{read};
+    push @cluster, $first_unique;
+}
+
+while ( $unique_hash = get_unique( $in_file, $first_read ) ) {
+    # Exit if no good hash could be returned
+    # (this happens if there are no more reads and the last reads
+    #  are poor quality)
+    last if ( !defined($unique_hash) );
+    my $new_unique = $unique_hash->{uniq};
+    $first_read = $unique_hash->{read};
+
+    # Calculate probability that uniques are the same
+    my $unique_distance =
+      compare_uniques( $first_unique, $new_unique, $read_length );
+
+    if ( $unique_distance > $threshold_distance ) {
+        find_cluster_variants( \@cluster, $read_length );
+        $first_unique = $new_unique;
+        @cluster      = ($first_unique);
+    }
+    else {
+        push @cluster, $new_unique;
+        if ( $new_unique->{count} > $first_unique->{count} ) {
+            $first_unique = $new_unique;
+        }
+    }
+
+    # Exit if no more reads (but the last reads were good, and so
+    # the last unique has been processed)
+    last if ( !defined($first_read) );
+}
+
+close $in_file;
+exit;
+
+sub compare_uniques {
+    my ( $unique_1, $unique_2, $read_length ) = @_;
+
+    my $high_quality_comparisons = 0;
+    my $distance                 = 0;
+    foreach my $pos ( 0 .. $read_length - 1 ) {
+        my $read_a_base = substr $unique_1->{seq}, $pos, 1;
+        my $read_b_base = substr $unique_2->{seq}, $pos, 1;
+        my $base_prob   = $unique_1->{p}[$pos] * $unique_2->{p}[$pos];
+
+        if ( $base_prob > 0 ) { $high_quality_comparisons++; }
+        if ( $read_a_base ne $read_b_base ) {
+            $distance += $base_prob;
+        }
+    }
+    my $rounded_distance = sprintf( "%2.0f", $distance );
+    my $unique_distance =
+      $high_quality_comparisons > 0
+      ? ( $rounded_distance / $high_quality_comparisons ) * $read_length
+      : $read_length;
+
+    return $unique_distance;
+}
+
+sub get_read {
+    my ($in_file) = @_;
+    my $seq_line;
+    if ( !( $seq_line = <$in_file> ) ) { return; }
+    chomp $seq_line;
+    my ( $read1seq, $read1qual, $read2seq, $read2qual ) = split / /, $seq_line;
+    if ( !defined($read2seq) )  { $read2seq  = ""; }
+    if ( !defined($read2qual) ) { $read2qual = ""; }
+
+    $read1qual =~ s/B/@/g;
+    $read2qual =~ s/B/@/g;
+
+    return {
+        r1s => $read1seq,
+        r1q => $read1qual,
+        r2s => $read2seq,
+        r2q => $read2qual
+    };
+}
+
+sub get_unique {
+    my ( $in_file, $first_read ) = @_;
+
+    my $unique_ok = 0;
+    my $new_read;
+    my $unique;
+    while ( !$unique_ok ) {
+        $unique = {
+            seq   => $first_read->{r1s},
+            count => 1,
+        };
+        push @{ $unique->{q} }, $first_read->{r1q};
+        push @{ $unique->{prs}{ $first_read->{r2s} } }, $first_read->{r2q};
+
+        while ( $new_read = get_read($in_file) ) {
+            last if ( $new_read->{r1s} ne $unique->{seq} );
+
+            $unique->{count}++;
+            push @{ $unique->{q} }, $new_read->{r1q};
+            push @{ $unique->{prs}{ $new_read->{r2s} } }, $new_read->{r2q};
+        }
+
+        # Convert qualities and check that unique is acceptable
+        calculate_median_qualities( $unique->{q} );
+        my $high_qual_bases = 0;
+        map {
+            if ( $_ > 0 ) { $high_qual_bases++; }
+        } @{ $unique->{q} };
+        if ( $high_qual_bases > ( $threshold_distance * 2 ) ) {
+            $unique_ok = 1;
+        }
+        else {
+            return if ( !defined($new_read) );
+
+            $first_read = $new_read;
+            next;
+        }
+
+        foreach my $q ( @{ $unique->{q} } ) {
+            push @{ $unique->{p} }, 1 - ( 10**( $q / -10 ) );
+        }
+    }
+    return { uniq => $unique, read => $new_read };
+
+}
+
+
+#############################################################################
+### Name:       FIND CLUSTER VARIANTS
+### Function:   for a set of uniques assigned to a particular cluster,
+###             correct errors and call variants,
+###             and output 'alleles' for this cluster
+### Parameters: cluster_ref  - array of uniques to process
+### Returns:    Nothing (prints sequences to STDIN)
+#############################################################################
+
+sub find_cluster_variants {
+    my ( $cluster_ref, $read_length ) = @_;
+
+    my @tag_bases;
+    my $total_unique_count = 0;
+
+    my @unique_counts_by_pos;
+
+    # Find and score all bases at each position
+    foreach my $unique ( @{$cluster_ref} ) {
+
+        my @bases = split //, $unique->{seq};
+        foreach my $i ( 0 .. $#bases ) {
+            $tag_bases[$i]{ $bases[$i] } += $unique->{count} * $unique->{q}[$i];
+
+            # Count this unique towards the total count for this base
+            # if there is a quality score for this unique at this position
+            # (ie score is not B)
+            if ( $unique->{q}[$i] > 0 ) {
+                $unique_counts_by_pos[$i]{ $bases[$i] } += $unique->{count};
+            }
+        }
+
+        $total_unique_count += $unique->{count};
+    }
+
+    # Take averages of base qualities for each base at each position
+    foreach my $base (qw/A C G T N/) {
+
+        foreach my $pos ( 0 .. $#tag_bases ) {
+
+            # Only take an average where there are bases with called
+            # qualities at this position (rather than 0 for B qual)
+            # and there is more than one unique for this base
+            # (so not singleton high qualities, which may be errors)
+
+            if (   ( defined( $unique_counts_by_pos[$pos]{$base} ) )
+                && ( $unique_counts_by_pos[$pos]{$base} > 1 ) )
+            {
+                $tag_bases[$pos]{$base} =
+                  int( $tag_bases[$pos]{$base} /
+                      $unique_counts_by_pos[$pos]{$base} );
+            }
+            else { $tag_bases[$pos]{$base} = 0; }
+        }
+    }
+
+    # Separate uniques into allele clusters
+    my %alleles;
+    my %seq_lookup;
+    my @uniques_sorted_by_count =
+      reverse sort { $a->{count} <=> $b->{count} } @{$cluster_ref};
+
+    foreach my $unique1 (@uniques_sorted_by_count) {
+        next if ( defined $seq_lookup{ $unique1->{seq} } );
+
+        my $unique1_length = length( $unique1->{seq} );
+      UNIQUE2:
+        foreach my $unique2 (@uniques_sorted_by_count) {
+
+            foreach my $pos ( 0 .. $unique1_length - 1 ) {
+
+                my $base1 = substr( $unique1->{seq}, $pos, 1 );
+
+                if ( $tag_bases[$pos]{$base1} > $quality_threshold ) {
+                    my $base2 = substr( $unique2->{seq}, $pos, 1 );
+                    next UNIQUE2
+                      if ( ( $tag_bases[$pos]{$base2} > $quality_threshold )
+                        && ( $base1 ne $base2 ) );
+                }
+            }
+
+            # Store unique2 details in unique1 cluster
+            $alleles{ $unique1->{seq} }{seqs}{ $unique2->{seq} } = $unique2;
+
+            # Note unique2 as part of the unique1 cluster
+            $seq_lookup{ $unique2->{seq} }{seqs}{ $unique1->{seq} } =
+              $unique1->{count};
+        }
+    }
+
+    return if ( keys %alleles == 0 );
+
+    my $passed = 0;
+
+    # Summarise and output alleles
+    foreach my $seq ( sort keys %alleles ) {
+        my $count = 0;
+        my @seq_quals;
+        my %pairs;
+
+        foreach my $seq2 ( sort keys %{ $alleles{$seq}{seqs} } ) {
+
+            # Only add seq2 to this cluster if it unambiguously matches
+            if ( keys %{ $seq_lookup{$seq2}{seqs} } == 1 ) {
+
+                # Add count
+                my $seq2_count = $alleles{$seq}{seqs}{$seq2}{count};
+                $count += $seq2_count;
+
+                # Add qual and base
+                my @seq2_quals = @{ $alleles{$seq}{seqs}{$seq2}{q} };
+
+                my @seq2_bases = split //, $seq2;
+                foreach my $pos ( 0 .. $#seq2_quals ) {
+                    $seq_quals[$pos] += $seq2_quals[$pos] * $seq2_count;
+                }
+                foreach my $pair ( keys %{ $alleles{$seq}{seqs}{$seq2}{prs} } )
+                {
+                    push @{ $pairs{$pair} },
+                      @{ $alleles{$seq}{seqs}{$seq2}{prs}{$pair} };
+                }
+            }
+        }
+
+        # By default, throw away singleton tags (tags with only one read)
+        next
+          if ( $count < $read_threshold );
+
+        # Throw away pairs containing Ns
+        map {
+            if (/N/) { delete $pairs{$_}; }
+        } keys %pairs;
+
+        my @sorted_pairs = sort keys %pairs;
+        my $i            = 0;
+        my $j            = 1;
+        while ( ( $i + $j ) <= $#sorted_pairs ) {
+            my $hamming =
+              ( $sorted_pairs[$i] ^ $sorted_pairs[ $i + $j ] ) =~
+              tr/\001-\255//;
+
+            if ( $hamming < ( $read_length / 4 ) ) {
+
+                push @{ $pairs{ $sorted_pairs[$i] } },
+                  @{ $pairs{ $sorted_pairs[ $i + $j ] } };
+                delete $pairs{ $sorted_pairs[ $i + $j ] };
+                $j++;
+            }
+            else { $i = $i + $j; $j = 1; }
+        }
+
+        # Throw away tags without a high quality pair, ie a good fragment
+        next if ( scalar keys %pairs == 0 );
+
+        # Output tag with qualities, counts and high quality paired ends
+        $passed = 1;
+        print "$seq ";
+        foreach my $qual (@seq_quals) {
+            print chr( ( $qual / $count ) + 64 );
+        }
+        print " $count ";
+        print scalar keys %pairs;
+        print "\n";
+        map {
+            if ( $_ ne "" )
+            {
+                print "\t$_ " . scalar @{ $pairs{$_} } . "\n";
+            }
+          }
+          sort keys %pairs;
+    }
+    if ($passed) { print "\n" }
+    return;
+}
+
+#############################################################################
+### Name:       CALCULATE MEDIAN QUALITIES
+### Function:   finds median qualities for a set of reads with identical
+###             sequences, so that a quality string can be assigned to
+###             this unique sequence
+### Parameters: qual_list_ref - list of quality strings, replaced with
+###             quality scores for this sequence
+### Returns:    Nothing (fills qual_list_ref)
+#############################################################################
+
+sub calculate_median_qualities {
+    my ($qual_list_ref) = @_;
+
+    my @full_quals;
+
+    foreach my $qualseq ( @{$qual_list_ref} ) {
+        foreach my $i ( 0 .. length($qualseq) - 1 ) {
+            push @{ $full_quals[$i] }, ord( substr( $qualseq, $i, 1 ) ) - 64;
+        }
+    }
+
+    @{$qual_list_ref} = ();
+
+    foreach my $i ( 0 .. $#full_quals ) {
+        my @quals = sort { $a <=> $b } @{ $full_quals[$i] };
+        my $median = ( $#quals == 0 ) ? 0 : int( $#quals / 2 );
+        push @{$qual_list_ref}, $quals[$median];
+    }
+    return;
+}

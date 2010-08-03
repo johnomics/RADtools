@@ -1,0 +1,483 @@
+#!/usr/bin/perl
+
+# Copyright 2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+#############################################################################
+
+# RADmarkers
+# Takes all the files in a folder with a .tags suffix and sorts the
+# sequences into clusters, representing all alleles of tags
+#
+# 16/05/10 First public version
+# 04/07/10 Bug fixes
+# 05/07/10 Added fragments option - defaults to using read counts but with
+#          -f will use fragment counts
+# 03/08/10 Incorporated into RADtools
+
+use strict;
+use warnings;
+use Carp;
+use English;
+use Getopt::Long;
+use Data::Dumper;
+
+# Autoflush output so reporting on progress works
+$| = 1;
+
+my $qual_threshold      = 0;
+my $tag_count_threshold = 0;
+my $kmer_length         = 4;
+my $hamming_threshold   = 0;
+my $end_tagfiles        = ".tags";
+my $snpsout             = 0;
+my $qualsout            = 0;
+my $verbose             = 0;
+my $fragments           = 0;
+my $include_singletons  = 0;         # Tags only in one individual
+
+my $options_okay = GetOptions(
+
+    #    'qual_threshold=i'      => \$qual_threshold,
+    'tag_count_threshold=i' => \$tag_count_threshold,
+    'kmer_length=i'         => \$kmer_length,
+    'hamming_threshold=i'   => \$hamming_threshold,
+    'end_tagfiles=s'        => \$end_tagfiles,
+    'snpsout'               => \$snpsout,
+    'outquals'              => \$qualsout,
+    'fragments'             => \$fragments,
+    'include_singletons'    => \$include_singletons,
+    'verbose'               => \$verbose,
+);
+
+croak
+"\nUsage: perl make_tag_clusters_from_rad_sequences.pl -t tag_count_threshold -h hamming_distance_threshold -e tagfile_extension -s output_snps -o output_quals -k kmer_length -v verbose\n"
+  if !$options_okay;
+
+opendir( my $tagdir, "." );
+my @tag_filenames = grep /($end_tagfiles)$/, readdir($tagdir);
+closedir($tagdir);
+
+my %tag_clusters;
+
+my %tags;
+my %pair_clusters;
+my @individuals;
+
+my %tag_count;
+my %read_count;
+
+my %kmer_lookup;
+
+my $max_tag_length = 0;
+my $min_tag_length = 10000000000;
+my $new_cluster_id = 0;
+
+my $species = "";
+foreach my $tag_filename ( sort @tag_filenames ) {
+    open my $tag_file, "<", $tag_filename
+      or croak "Can't open $tag_filename: $OS_ERROR!\n";
+    my $individual = ( split /_/, $tag_filename )[1];
+    $species = ( split /_/, $tag_filename )[0];
+    push @individuals, $individual;
+    my %cluster;
+
+    #    my %pairs;
+
+    if ($verbose) { print "Loading tags from $individual...\n"; }
+    while ( my $tag_line = <$tag_file> ) {
+        chomp $tag_line;
+
+        # If cluster is fully loaded, process cluster
+        if ( $tag_line eq "" ) {
+            my %cluster_ids;
+
+            # Get existing cluster IDs for these sequences
+          SEQUENCE:
+            foreach my $sequence ( keys %cluster ) {
+
+                # Check for exact match
+                if ( defined( $tags{$sequence}{cluster} ) ) {
+                    $cluster_ids{ $tags{$sequence}{cluster} }++;
+                    next SEQUENCE;
+                }
+
+                # Check for post kmer match
+                my $kmer_end = substr( $sequence, $kmer_length );
+                if ( defined( $kmer_lookup{$kmer_end}{cluster} ) ) {
+                    $cluster_ids{ $kmer_lookup{$kmer_end}{cluster} }++;
+                    next SEQUENCE;
+                }
+
+                next SEQUENCE if ( $hamming_threshold == 0 );
+
+                # Check for Hamming distance matches
+                foreach my $tag_seq ( keys %tags ) {
+                    next if ( $tag_seq eq $sequence );
+                    next
+                      if ( ( defined( $tags{$tag_seq}{cluster} ) )
+                        && (
+                            defined( $cluster_ids{ $tags{$tag_seq}{cluster} } )
+                        ) );
+                    my $hamming = ( $tag_seq ^ $sequence ) =~ tr/\001-\255//;
+                    if ( $hamming <= $hamming_threshold ) {
+                        if ( defined( $tags{$tag_seq}{cluster} ) ) {
+                            $cluster_ids{ $tags{$tag_seq}{cluster} }++;
+                        }
+                    }
+                }
+
+            }
+            my $this_cluster_id = -1;
+
+            # If matching previous cluster IDs, collapse all these
+            # clusters into one cluster
+            if ( keys %cluster_ids > 0 ) {
+                my @cluster_list = sort { $a <=> $b } keys %cluster_ids;
+                my $smallest_id = $cluster_list[0];
+                foreach my $cluster_id (@cluster_list) {
+                  CLUSTERSEQ:
+                    foreach
+                      my $sequence ( keys %{ $tag_clusters{$cluster_id} } )
+                    {
+                        $tags{$sequence}{cluster} = $smallest_id;
+
+                        my $kmer_end = substr( $sequence, 4 );
+                        $kmer_lookup{$kmer_end}{cluster} = $smallest_id;
+                        next CLUSTERSEQ if ( $smallest_id eq $cluster_id );
+                        foreach my $individual (
+                            keys %{ $tag_clusters{$cluster_id}{$sequence} } )
+                        {
+                            $tag_clusters{$smallest_id}{$sequence}{$individual}
+                              {count} =
+                              $tag_clusters{$cluster_id}{$sequence}{$individual}
+                              {count};
+                            $tag_clusters{$smallest_id}{$sequence}{$individual}
+                              {unique} =
+                              $tag_clusters{$cluster_id}{$sequence}{$individual}
+                              {unique};
+                            $tag_clusters{$smallest_id}{$sequence}{$individual}
+                              {qual} =
+                              $tag_clusters{$cluster_id}{$sequence}{$individual}
+                              {qual};
+
+                        }
+                    }
+                    if ( $cluster_id ne $smallest_id ) {
+                        delete $tag_clusters{$cluster_id};
+                    }
+                }
+                $this_cluster_id = $smallest_id;
+            }
+
+            # If not matching any IDs, make a new cluster
+            else {
+                $new_cluster_id++;
+                $this_cluster_id = $new_cluster_id;
+            }
+
+            foreach my $sequence ( keys %cluster ) {
+                foreach my $individual ( keys %{ $cluster{$sequence} } ) {
+
+                    $tag_clusters{$this_cluster_id}{$sequence}{$individual}
+                      {count} = $cluster{$sequence}{$individual}{count};
+                    $tag_clusters{$this_cluster_id}{$sequence}{$individual}
+                      {unique} = $cluster{$sequence}{$individual}{unique};
+                    $tag_clusters{$this_cluster_id}{$sequence}{$individual}
+                      {qual} = $cluster{$sequence}{$individual}{qual};
+
+                }
+                $tags{$sequence}{cluster} = $this_cluster_id;
+
+                my $kmer_end = substr $sequence, 4;
+                $kmer_lookup{$kmer_end}{cluster} = $this_cluster_id;
+            }
+
+            # Empty cluster and get more input
+            %cluster = ();
+
+            #            %pairs   = ();
+            next;
+        }
+
+        if ( $tag_line =~ /^\s/ ) {
+
+     #            my ( $start, $pair_seq, $pair_count ) = split /\s/, $tag_line;
+     #            $pairs{$pair_seq} = $pair_count;
+            next;
+        }
+        my ( $tag_seq, $tag_qual, $tag_read_count, $tag_unique_count ) =
+          split / /,
+          $tag_line;
+
+        # Reject tags containing P2 adapter site
+        next if ( $tag_seq =~ m/GATCGGA/ );
+
+        my $count = $fragments ? $tag_unique_count : $tag_read_count;
+        next if ( $count < $tag_count_threshold );
+
+        # Quality trim tag
+        my $trim_qual           = "";
+        my $qual_threshold_char = chr( $qual_threshold + 64 );
+
+        # The h at the start of the regular expression is a hack.
+        # If Q=30, char is ^. This searches for [^-h] which is NOT h,
+        # and so lots of high quality reads get thrown away.
+        # This now searches for h OR char to h.
+        if ( $tag_qual =~ m{(\A[h$qual_threshold_char-h]+)} ) {
+            $trim_qual = $1;
+        }
+
+        my $trim_seq = substr( $tag_seq, 0, length($trim_qual) );
+
+        $tags{$trim_seq}{ind}{$individual}{count}  = $tag_read_count;
+        $tags{$trim_seq}{ind}{$individual}{unique} = $tag_unique_count;
+        $tags{$trim_seq}{ind}{$individual}{qual}   = $trim_qual;
+        $cluster{$trim_seq}{$individual}{count}    = $tag_read_count;
+        $cluster{$trim_seq}{$individual}{unique}   = $tag_unique_count;
+        $cluster{$trim_seq}{$individual}{qual}     = $trim_qual;
+
+        if ( length($trim_seq) > $max_tag_length ) {
+            $max_tag_length = length($trim_seq);
+        }
+        if ( length($trim_seq) < $min_tag_length ) {
+            $min_tag_length = length($trim_seq);
+        }
+    }
+    close $tag_file;
+}
+@individuals = sort @individuals;
+
+
+
+if ($verbose) {
+    print scalar( keys %tag_clusters )
+      . " clusters found from "
+      . scalar( keys %tags )
+      . " tags\n";
+}
+
+my %cluster_summary;
+
+foreach my $tag_cluster ( sort { $a <=> $b } keys %tag_clusters ) {
+    my @seg_patterns;
+    my $seg_pattern = "";
+    foreach my $tag_sequence ( sort keys %{ $tag_clusters{$tag_cluster} } ) {
+        foreach my $individual ( @individuals ) {
+            my $individual_present =
+              defined( $tag_clusters{$tag_cluster}{$tag_sequence}{$individual} )
+              ? 1
+              : 0;
+            $seg_pattern .= $individual_present;
+        }
+
+        if ((!$include_singletons) && (($seg_pattern =~ tr/1//) == 1)) {
+            delete $tags{$tag_sequence};
+            delete $tag_clusters{$tag_cluster}{$tag_sequence};
+            $seg_pattern = "";
+            next;
+        };
+
+        push @seg_patterns,
+          {
+            seg_pattern => $seg_pattern,
+            sequence    => $tag_sequence,
+            individuals => $tag_clusters{$tag_cluster}{$tag_sequence},
+          };
+
+        $seg_pattern = "";
+
+    }
+    if (@seg_patterns == 0) {
+        delete $tag_clusters{$tag_cluster};
+        next;
+    };
+
+    my $tag_count = keys %{ $tag_clusters{$tag_cluster} };
+    $cluster_summary{$tag_count}{count}++;
+
+    my @sorted_alleles;
+    $seg_pattern = "";
+    foreach
+      my $seg_pattern_ref ( sort { $a->{seg_pattern} <=> $b->{seg_pattern} }
+        @seg_patterns )
+    {
+        push @sorted_alleles, $seg_pattern_ref;
+        $seg_pattern .= $seg_pattern_ref->{seg_pattern} . " ";
+    }
+    $cluster_summary{$tag_count}{segs}{$seg_pattern}{count}++;
+
+    push @{ $cluster_summary{$tag_count}{segs}{$seg_pattern}{tags} },
+      \@sorted_alleles;
+}
+
+if ($verbose && !$include_singletons) {
+    print scalar( keys %tag_clusters )
+      . " clusters found from "
+      . scalar( keys %tags )
+      . " tags after tags found in only one individual removed\n";
+}
+
+foreach my $tag_count ( sort { $a <=> $b } keys %cluster_summary ) {
+    print "$tag_count $cluster_summary{$tag_count}{count}\n";
+
+    foreach my $seg_pattern (
+        sort
+        keys %{ $cluster_summary{$tag_count}{segs} }
+      )
+    {
+        print_seg_tags( $seg_pattern,
+            $cluster_summary{$tag_count}{segs}{$seg_pattern},
+            \@individuals, );
+        print "\n";
+    }
+}
+
+sub print_seg_tags {
+    my ( $seg_pattern, $seg_tags_ref, $ind_ref ) = @_;
+
+    print "$seg_pattern ";
+    printf "%3s ", $seg_tags_ref->{count};
+    print is_mirror($seg_pattern);
+    print "\n";
+
+    print "\t";
+    print " " x $max_tag_length;
+    print "    ";
+    map {print $_; if (length($_)<7) {print " " x (7-length($_));} else {print " ";}} sort @individuals;
+    print "\n";
+
+    foreach my $tag_ref ( @{ $seg_tags_ref->{tags} } ) {
+
+        foreach my $allele_ref ( @{$tag_ref} ) {
+
+            print "\t$allele_ref->{sequence}    ";
+            my $padding = $max_tag_length - length( $allele_ref->{sequence} );
+            print " " x $padding;
+            print_tag_counts( $allele_ref->{individuals}, $ind_ref, $qualsout );
+        }
+
+        if ($snpsout) { print "\n"; print_seg_snps( $tag_ref, $ind_ref ); }
+
+        print "\n";
+    }
+}
+
+sub print_tag_counts {
+    my ( $seq_ref, $ind_ref, $quals ) = @_;
+    foreach my $individual ( sort @{$ind_ref} ) {
+
+        my $count =
+            $fragments
+          ? $seq_ref->{$individual}{unique}
+          : $seq_ref->{$individual}{count};
+        if ( defined $count ) {
+            printf "%6.2f ", $count;
+        }
+        else {
+            print "  -    ";
+        }
+    }
+    print "\n";
+    if ($quals) {
+        foreach my $individual ( sort @{$ind_ref} ) {
+            if ( defined $seq_ref->{$individual}{qual} ) {
+                print "\t";
+                my @quals = split //, $seq_ref->{$individual}{qual};
+                map {
+                    my $qual_score = ord($_) - 64;
+
+                    if    ( $qual_score < 20 ) { print "!"; }
+                    elsif ( $qual_score < 30 ) { print "?" }
+                    else                       { print " "; }
+                } @quals;
+                print " $individual\n";
+            }
+        }
+    }
+    return;
+}
+
+sub print_seg_snps {
+    my ( $tag_ref, $ind_ref ) = @_;
+
+    my $tag_length = length( $tag_ref->[0]->{sequence} );
+
+    foreach my $pos ( 0 .. $tag_length ) {
+        my %pos_bases;
+        foreach my $allele_ref ( @{$tag_ref} ) {
+            my $allele_base = substr $allele_ref->{sequence}, $pos, 1;
+            foreach my $individual ( sort keys %{ $allele_ref->{individuals} } ) {
+                my $count =
+                    $fragments
+                  ? $allele_ref->{individuals}{$individual}{unique}
+                  : $allele_ref->{individuals}{$individual}{count};
+                if ( defined $count ) {
+                    $pos_bases{$allele_base}{$individual} += $count;
+                }
+            }
+        }
+
+        if ( keys %pos_bases > 1 ) {
+            foreach my $base ( sort keys %pos_bases ) {
+                print "\t";
+                print " " x $pos;
+                print $base;
+                print " " x ( $tag_length - $pos );
+                print "   ";
+                foreach my $individual ( @{$ind_ref} ) {
+                    if ( defined( $pos_bases{$base}{$individual} ) ) {
+                        printf "%6.2f ", $pos_bases{$base}{$individual};
+                    }
+                    else {
+                        print "  -    ";
+                    }
+                }
+                print "\n";
+            }
+            print "\n";
+        }
+    }
+    return;
+}
+
+sub is_mirror {
+    my ($seg_pattern) = @_;
+
+    my @genotypes = split " ", $seg_pattern;
+    foreach my $genotype_a (@genotypes) {
+        foreach my $genotype_b (@genotypes) {
+            next if ( $genotype_a eq $genotype_b );
+
+            my @genotype_b_all = split //, $genotype_b;
+
+            my @mirror_b_all;
+            foreach my $genotype_b_present (@genotype_b_all) {
+                if ($genotype_b_present) {
+                    push @mirror_b_all, 0;
+                }
+                else {
+                    push @mirror_b_all, 1;
+                }
+            }
+            my $mirror_b = join "", @mirror_b_all;
+
+            if ( $genotype_a eq $mirror_b ) {
+                print "M";
+            }
+        }
+    }
+    return;
+}

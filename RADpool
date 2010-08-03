@@ -1,0 +1,536 @@
+#!/usr/bin/perl
+
+# RADpool
+# Take raw Illumina RAD reads and create files for each specified pool
+
+# Copyright 2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+# History:
+# 16/05/10 First public version
+# 02/07/10 Changed defaults to avoid trimming reads
+# 18/07/10 Added MID length parameter and changed default to reject zombies,
+#          not accept them
+# 03/08/10 Incorporated into RADtools
+
+# Description
+# RADpool accepts as input one or two FASTQ files containing single or 
+# paired end GERALD output from an Illumina RAD sequencing run. These RAD 
+# sequences contain MIDs which identify the individuals from which the 
+# sequence came. This script loads in the pools to which the MIDs belong and 
+# assigns the sequences to the appropriate pools. It then writes out the
+# sequences to separate files, one for each pool.
+
+#############################################################################
+###
+### SET UP
+###
+#############################################################################
+
+use strict;
+use warnings;
+use Carp;
+use English;
+use Getopt::Long;
+use Data::Dumper;
+
+# Autoflush output so reporting on progress works
+$| = 1;
+
+# Set up default options
+
+my $read1_file              = "";
+my $read2_file              = "";
+my $species                 = "";
+my $res_site                = "TGCAGG";    #SbfI
+my $minimum_sequence_length = 0;
+my $quality_threshold       = -5;
+my $verbose                 = 0;
+my $help                    = 0;
+my $benchmark               = 0;
+my $trim                    = 0;
+my $zombies_accepted        = 0;
+my $mid_length              = 5;
+
+# Load user options
+my $options_okay = GetOptions(
+    'in=s'             => \$read1_file,
+    'paired=s'         => \$read2_file,
+    'species=s'        => \$species,
+    'enzyme_site=s'    => \$res_site,
+    'length_mid=i'     => \$mid_length,
+    'min_length=i'     => \$minimum_sequence_length,
+    'quality=i'        => \$quality_threshold,
+    'trim'             => \$trim,
+    'verbose'          => \$verbose,
+    'benchmark'        => \$benchmark,
+    'help'             => \$help,
+    'zombies_accepted' => \$zombies_accepted,
+);
+croak "Error loading options" if !$options_okay;
+croak
+"Usage: perl cluster_rad_sequences.pl -i read1_file -p read2_file -s species_name -e restriction_enzyme_site -l length_of_mid -m minimum_sequence_length -q quality_threshold -t -z -v (verbose) -b (benchmark) -h (help)\n-t: Trim reads to minimum sequence length\n-s: Species name should be name of corresponding pools file, ie if file is Homosapiens.pools, use -s Homosapiens\n-z Accept reads with 'zombie' MIDs that don't match any one real MID perfectly and could be assigned to more than one other MID\n"
+  if $help;
+
+my $res_site_length = length($res_site);
+
+# If benchmarking, ensure verbose
+if ($benchmark) { $verbose = 1; }
+
+# Set start time for benchmarking
+my $now   = time;
+my $start = $now;
+
+#############################################################################
+###
+### LOAD POOLS AND MIDS
+###
+#############################################################################
+
+my %mid_pools    = ();
+my %pool_handles = ();
+if ($verbose) { print "Loading pools and MIDs...\n"; }
+
+if ( $species ne "" ) {
+
+    # Load pools from file into an array
+    my $pool_file = $species . ".pools";
+    open my $poolhandle, '<', $pool_file
+      or croak "Couldn't open '$pool_file': $OS_ERROR";
+    my @pools = <$poolhandle>;
+    close $poolhandle;
+
+    if ( !-d "./$species" ) {
+        mkdir "./$species"
+          or croak
+          "Can't create directory for $species output files: $OS_ERROR!\n";
+    }
+
+    # Load MIDs for all pools
+    foreach my $pool_line (@pools) {
+        chomp $pool_line;
+
+        my @pool_mid_list = split / /, $pool_line;
+
+        my $pool_name = shift @pool_mid_list;
+
+       #        open $pool_handles{$pool_name}, '>',
+       #          "./$species/$species\_$pool_name\_reads.txt"
+       #          or croak "Can't open output file for $pool_name: $OS_ERROR\n";
+
+        # Load MIDs into array and set up hash of MIDs for pool lookup
+
+        foreach my $mid (@pool_mid_list) {
+            if (!$zombies_accepted) {
+                push @{ $mid_pools{$mid} }, $pool_name;
+            }
+            else {
+                for my $i ( 1 .. $mid_length ) {
+                    for my $base ( "A", "G", "C", "T" ) {
+                        my $fuzzycode  = $mid;
+                        my $prebase_i  = $i - 1;
+                        my $postbase_i = $mid_length - $i;
+                        $fuzzycode =~ s{^([ACGT]{$prebase_i})
+                            ([ACGT])
+                            ([ACGT]{$postbase_i})$}
+                            {$1$base$3}xms;
+                        push @{ $mid_pools{$fuzzycode} }, $pool_name;
+                    }
+                }
+            }
+        }
+    }
+}
+else {
+    croak "Please name a species for pools and MIDs using the -s option";
+}
+
+# Collapse lists of pools for each MID into unique, sorted, string
+foreach my $mid ( keys %mid_pools ) {
+    my @pool_list = sort @{ $mid_pools{$mid} };
+    my $seen      = "";
+
+    # Get unique elements of list
+    @pool_list = grep ( $_ ne $seen && ( ($seen) = $_ ), @pool_list );
+
+    if ( (!$zombies_accepted) && ( @pool_list > 1 ) ) {
+        delete $mid_pools{$mid};
+    }
+    else {
+
+        my $pool_string = "";
+
+        # Collapse list of pools
+        foreach my $pool (@pool_list) {
+            $pool_string = $pool_string . $pool . ".";
+        }
+
+        # Get rid of trailing /
+        chop $pool_string;
+        $mid_pools{$mid} = $pool_string;
+
+        open $pool_handles{$pool_string}, '>',
+          "./$species/$species\_$pool_string\_reads.txt"
+          or croak "Can't open output file for $pool_string: $OS_ERROR\n";
+    }
+}
+
+# Make fuzzy list of restriction enzyme sites
+
+my %fuzzy_res_sites = ();
+for my $i ( 1 .. $res_site_length ) {
+    for my $base ( "A", "G", "C", "T" ) {
+        my $fuzzyseq   = $res_site;
+        my $prebase_i  = $i - 1;
+        my $postbase_i = $res_site_length - $i;
+        $fuzzyseq =~ s{^([ACGT]{$prebase_i})
+               ([ACGT])
+               ([ACGT]{$postbase_i})$}
+               {$1$base$3}xms;
+        $fuzzy_res_sites{$fuzzyseq} = $res_site;
+    }
+}
+
+if ($benchmark) { print "\n"; $now = print_benchmark($now); print "\n"; }
+
+#############################################################################
+###
+### LOAD FASTQ RECORDS
+###
+#############################################################################
+
+if ($verbose) { print "Loading RAD tags:\n"; }
+
+# Initialise sequence, quality, RAD and benchmarking variables
+
+my $fastq_sequence_header = "";
+my $fastq_sequence        = "";
+my $fastq_quality_header  = "";
+my $fastq_quality         = "";
+
+my $quality_tail       = "";
+my $sequence           = "";
+my $record_count_total = 0;
+my $record_count_valid = 0;
+
+my %rads = ();
+
+# Open RAD sequence file
+open my $read1_in, '<', $read1_file
+  or croak "Couldn't open '$read1_file': $OS_ERROR";
+
+my $read2_in;
+if ( $read2_file ne "" ) {
+    open $read2_in, '<', $read2_file
+      or croak "Couldn't open '$read2_file': $OS_ERROR";
+}
+
+# Create a directory for the species if it doesn't already exist
+if ( !( -d "./$species" ) ) {
+    mkdir "./$species" or croak "Can't make ./$species: $OS_ERROR";
+}
+
+# Output invalid/unclustered sequences
+my $results_file_stem = "./$species/$species\_" . get_timestamp();
+my $invalid_file      = "$results_file_stem\_invalid.txt";
+open my $invalid_handle, ">$invalid_file"
+  or croak "Can't open $invalid_file: $OS_ERROR";
+
+print $invalid_handle
+"Input files: $read1_file, $read2_file; Species: $species, Enzyme site: $res_site; Minimum length: $minimum_sequence_length; Quality threshold: $quality_threshold\n";
+
+# Load RAD sequences into hash of pools with counts for identical sequences
+
+my $non_fastq_count        = 0;
+my $wrong_rad_format_count = 0;
+my $wrong_ressite_count    = 0;
+my $wrong_mid_count        = 0;
+my $short_sequence_count   = 0;
+
+LOAD_ONE_SEQUENCE:
+while ( $fastq_sequence_header = <$read1_in> ) {
+
+    $fastq_sequence       = "";
+    $fastq_quality_header = "";
+    $fastq_quality        = "";
+
+    my $read2_header         = "";
+    my $read2_sequence       = "";
+    my $read2_quality_header = "";
+    my $read2_quality        = "";
+
+    # Find start of a FASTQ record (line beginning with @)
+    if ( $fastq_sequence_header =~ /^@(\S+)/ ) {
+        $fastq_sequence       = <$read1_in>;
+        $fastq_quality_header = <$read1_in>;
+        $fastq_quality        = <$read1_in>;
+        chomp $fastq_sequence;
+        chomp $fastq_quality;
+        if ( $read2_file ne "" ) {
+            $read2_header         = <$read2_in>;
+            $read2_sequence       = <$read2_in>;
+            $read2_quality_header = <$read2_in>;
+            $read2_quality        = <$read2_in>;
+
+            chomp $read2_sequence;
+            chomp $read2_quality;
+        }
+    }
+
+    # Throw away bad FASTQ records
+    if (   ( $fastq_sequence !~ /^[AGCTN\.]+$/ )
+        || ( $fastq_quality_header !~ /^\+/ )
+        || ( $fastq_quality !~ /^[;-h]+$/ ) )
+    {
+        chomp $fastq_sequence_header;
+        chomp $fastq_quality_header;
+
+        print $invalid_handle
+"Sequence, quality or quality header not valid FASTQ: $fastq_sequence $fastq_quality $fastq_sequence_header $fastq_quality_header\n";
+        $non_fastq_count++;
+        next LOAD_ONE_SEQUENCE;
+    }
+
+    # Update progress meter
+    $record_count_total++;
+    if ( ($verbose) && ( $record_count_total % 100000 == 0 ) ) {
+        print
+"OK: $record_count_valid; FASTQ: $non_fastq_count; RAD: $wrong_rad_format_count; Res: $wrong_ressite_count; MID: $wrong_mid_count; Short: $short_sequence_count\n";
+        $now = update_progress(
+            {
+                record_count => $record_count_total,
+                benchmark    => $benchmark,
+                now          => $now,
+                dot          => 100000,
+                marker       => 1000000
+            }
+        );
+    }
+
+    # Find any point where Q<20 and strip off sequence following this point
+    # Q=20 is ASCII M; Q=40 is ASCII h
+    # This automatically strips the N / ; off the end of the sequence
+    my $qual_threshold_char = chr( $quality_threshold + 64 );
+    if ( $fastq_quality =~ m{(\A[$qual_threshold_char-h]+)} ) {
+        $quality_tail = $1;
+    }
+    else {
+        $quality_tail = "";
+    }
+
+    # Get substring of sequence of length quality_substring
+    $sequence = substr( $fastq_sequence, 0, length($quality_tail) );
+
+    # Find restriction enzyme site; if not found, skip sequence
+    if (
+        $sequence !~ m{^([AGCTN]{$mid_length})
+                        ([AGCTN]{$res_site_length})
+                        ([AGCTN\.]+)$}xms
+      )
+    {
+        chomp $fastq_sequence_header;
+        chomp $fastq_sequence;
+        chomp $fastq_quality_header;
+        chomp $fastq_quality;
+
+        print $invalid_handle
+"Sequence is not a valid RAD sequence               : $fastq_sequence $fastq_quality $sequence\n";
+        $wrong_rad_format_count++;
+        next LOAD_ONE_SEQUENCE;
+    }
+
+    my ( $mid, $seq_res_site, $dna_sequence ) = ( $1, $2, $3 );
+
+    if ( !( exists( $fuzzy_res_sites{$seq_res_site} ) ) ) {
+
+        print $invalid_handle "Restriction enzyme site does not match"
+          . "             : $fastq_sequence $fastq_quality "
+          . "$seq_res_site $sequence\n";
+        $wrong_ressite_count++;
+        next LOAD_ONE_SEQUENCE;
+    }
+
+    # Find pool for this MID; if no pool, make pool for this MID alone
+    if ( !( exists( $mid_pools{$mid} ) ) ) {
+
+        # Check one-base-pair variants of MID in case of sequencing error
+
+        # If MID not found, reject read
+        print $invalid_handle "MID is not a valid MID"
+          . "                     : $fastq_sequence $fastq_quality "
+          . "$mid $sequence\n";
+        $wrong_mid_count++;
+        next LOAD_ONE_SEQUENCE;
+    }
+    my $pool = $mid_pools{$mid};
+
+    # Increment the number of times this sequence has occurred
+    if ( length($dna_sequence) >= $minimum_sequence_length ) {
+
+        # Remove MID and res site bases from read 1 quality string
+        if (
+            $quality_tail =~ m{^(.{$mid_length})(.{$res_site_length})(.+)$}xms )
+        {
+            $quality_tail = $3;
+        }
+        if ($trim) {
+            $dna_sequence = substr $dna_sequence, 0, $minimum_sequence_length;
+            $quality_tail = substr $quality_tail, 0, $minimum_sequence_length;
+        }
+        print { $pool_handles{$pool} } "$dna_sequence $quality_tail";
+        if ( $read2_file ne "" ) {
+            print { $pool_handles{$pool} } " $read2_sequence $read2_quality";
+        }
+        print { $pool_handles{$pool} } "\n";
+        $rads{$pool}{$dna_sequence}++;
+        $record_count_valid++;
+    }
+
+    # Otherwise, sequence is too short; throw it away
+    else {
+        print $invalid_handle "Sequence shorter than "
+          . $minimum_sequence_length
+          . " base pairs                : "
+          . "$fastq_sequence $fastq_quality $dna_sequence\n";
+        $short_sequence_count++;
+
+    }
+
+}
+foreach my $pool ( keys %pool_handles ) {
+    close $pool_handles{$pool};
+}
+
+close $read1_in;
+
+if ( $read2_file ne "" ) {
+    close $read2_in;
+}
+
+# Output records loaded and discarded
+if ($verbose) {
+
+    print "$record_count_valid records loaded, but discarded \n"
+      . "$non_fastq_count records not in FASTQ format, \n"
+      . "$wrong_rad_format_count records not in RAD format, \n"
+      . "$wrong_ressite_count records not matching restriction enzyme site, \n"
+      . "$wrong_mid_count records not matching any listed MIDs, and \n"
+      . "$short_sequence_count records with high-quality sequences less than $minimum_sequence_length long\n";
+}
+
+print $invalid_handle "$record_count_valid records loaded, but discarded \n"
+  . "$non_fastq_count records not in FASTQ format, \n"
+  . "$wrong_rad_format_count records not in RAD format, \n"
+  . "$wrong_ressite_count records not matching restriction enzyme site, \n"
+  . "$wrong_mid_count records not matching any listed MIDs, and \n"
+  . "$short_sequence_count records with high-quality sequences less than $minimum_sequence_length long\n";
+
+close $invalid_handle;
+
+if ($benchmark) {
+    print "\nTotal time for script to run: \n";
+    print_benchmark($start);
+    print "\n";
+}
+if ($verbose) { print "\nDone\n"; }
+
+#############################################################################
+###
+### END OF SCRIPT
+###
+#############################################################################
+
+#############################################################################
+###
+### SUBROUTINES
+###
+#############################################################################
+
+#############################################################################
+### Name:       UPDATE PROGRESS
+### Function:   prints a progress meter
+### Parameters: Record count - number of records processed so far
+###             Benchmark    - benchmarking flag
+###             Now          - current time
+### Returns:    Current time
+#############################################################################
+
+sub update_progress {
+    my ($arg_ref) = @_;
+
+    my $record_count = $arg_ref->{record_count};
+    my $benchmark    = $arg_ref->{benchmark};
+    my $now          = $arg_ref->{now};
+    my $dot          = $arg_ref->{dot};
+    my $marker       = $arg_ref->{marker};
+
+    if ( $record_count % $dot == 0 ) { print "."; }
+    if ( $record_count % $marker == 0 ) {
+        print "$record_count";
+        if ($benchmark) {
+            print ": ";
+            $now = print_benchmark($now);
+        }
+        print "\n";
+    }
+    return $now;
+}
+
+#############################################################################
+### Name:       PRINT BENCHMARK
+### Function:   prints the time since last benchmark was reported
+### Parameters: Start (time of last benchmark)
+### Returns:    Current time
+#############################################################################
+
+sub print_benchmark {
+    my ($init) = @_;
+
+    my $now   = time;
+    my $bench = $now - $init;
+    printf(
+        "Time: %02d:%02d:%02d",
+        int( $bench / 3600 ),
+        int( ( $bench % 3600 ) / 60 ),
+        int( $bench % 60 )
+    );
+
+    return time;
+}
+
+#############################################################################
+### Name:       GET TIMESTAMP
+### Function:   gets and formats the current time
+### Parameters: None
+### Returns:    Current time as YYYYMMDD_HHMMSS
+#############################################################################
+
+sub get_timestamp {
+    my ( $sec, $min, $hour, $mday, $mon, $year ) = localtime(time);
+    $mon++;
+    $year += 1900;
+    if ( $mon < 10 )  { $mon  = "0$mon"; }
+    if ( $mday < 10 ) { $mday = "0$mday"; }
+    if ( $hour < 10 ) { $hour = "0$hour"; }
+    if ( $min < 10 )  { $min  = "0$min"; }
+    if ( $sec < 10 )  { $sec  = "0$sec"; }
+
+    return $year . $mon . $mday . '_' . $hour . $min . $sec;
+}
+
+#############################################################################
+#END
+#############################################################################
