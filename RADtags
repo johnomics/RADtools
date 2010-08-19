@@ -1,114 +1,153 @@
 #!/usr/bin/env perl
 
-# Copyright 2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
-
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-#############################################################################
-
 # RADtags
-# Attempt to identify RAD tag clusters by checking pairs of consecutive
-# reads for high Hamming distances
+# Identify RAD tags in reads from RAD samples
 # Expects sorted reads as input
 
+# History:
 # 03/08/10 Incorporated into RADtools
+# 18/08/10 Run through perlcritic, tidied up options, added POD,
+#          added main() for testing
+
+#############################################################################
+###
+### PREAMBLE
+###
+#############################################################################
 
 use strict;
 use warnings;
-use Carp;
-use English;
-use Getopt::Long;
-use Data::Dumper;
-use List::Util qw[min max sum];
-use POSIX qw[ceil floor];
+use English qw( -no_match_vars );
+use Getopt::Long qw(:config bundling no_auto_abbrev auto_version );
+use Pod::Usage;
 
-# Autoflush output so reporting on progress works
-$| = 1;
+use POSIX qw{ceil};
 
-my $in_filename       = "";
-my $expected_tags     = 10000;
-my $quality_threshold = 20;
-my $read_threshold    = 4;
+# Would like to use Carp, but an outstanding bug causes cryptic errors
+# when using caller(), so using die until this is fixed
+# http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-my @bases = qw/A C G T/;
+local $main::VERSION    = 0.1;    # Used by Getopt::Long to provide --version
+local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
-my $options_okay = GetOptions(
-    'input=s'         => \$in_filename,
-    'expected_tags=i' => \$expected_tags,
-);
+main(@ARGV) unless caller;        # So test suite can call script
 
-croak
-"\nUsage: perl cluster_rad_reads_by_hamming_distance -i in_filename -e expected_tags\n"
-  if !$options_okay;
+sub main {
 
-croak "\nNo filename given - please supply a name for the -i option\n"
-  if ( $in_filename eq "" );
+    # Set up default options
 
-open my $in_file, '<', $in_filename
-  or croak "Can't open $in_filename: $OS_ERROR!";
+    my $help  = 0;
+    my $usage = 0;
+    my $man   = 0;
 
-# This calculates how many bases required to uniquely ID
-# this number of tags (reverse of 4^(expected_tags))
-# with a couple of extra orders of magnitude added
-# so that SNPs can be included in the same cluster
-my $threshold_distance = ceil( log($expected_tags) / log(4) );
+    my $in_filename       = q{};
+    my $expected_tags     = -1;
+    my $quality_threshold = 20;
+    my $read_threshold    = 4;
 
-my $first_unique;
-my $unique_hash;
-my $read_length = 0;
-my $first_read  = get_read($in_file);
-my @cluster;
+    my $options_okay = GetOptions(
 
-if ( defined($first_read) ) {
-    $read_length  = length( $first_read->{r1s} );
-    $unique_hash  = get_unique( $in_file, $first_read );
-    $first_unique = $unique_hash->{uniq};
-    $first_read   = $unique_hash->{read};
-    push @cluster, $first_unique;
-}
+        'help|?' => \$help,
+        'usage'  => \$usage,
+        'man'    => \$man,
 
-while ( $unique_hash = get_unique( $in_file, $first_read ) ) {
-    # Exit if no good hash could be returned
-    # (this happens if there are no more reads and the last reads
-    #  are poor quality)
-    last if ( !defined($unique_hash) );
-    my $new_unique = $unique_hash->{uniq};
-    $first_read = $unique_hash->{read};
+        'input|i=s'             => \$in_filename,
+        'expected_tags|e=i'     => \$expected_tags,
+        'quality_threshold|q=i' => \$quality_threshold,
+        'read_threshold|r=i'    => \$read_threshold,
+    ) or pod2usage( -verbose => 0 );
 
-    # Calculate probability that uniques are the same
-    my $unique_distance =
-      compare_uniques( $first_unique, $new_unique, $read_length );
+    pod2usage( -verbose => 0 ) if $usage;
+    pod2usage( -verbose => 1 ) if $help;
+    pod2usage( -verbose => 2 ) if $man;
 
-    if ( $unique_distance > $threshold_distance ) {
-        find_cluster_variants( \@cluster, $read_length );
-        $first_unique = $new_unique;
-        @cluster      = ($first_unique);
+    pod2usage( -verbose => 0 ) if ( $in_filename   eq q{} );
+    pod2usage( -verbose => 0 ) if ( $expected_tags == -1 );
+
+    # This calculates how many bases required to uniquely ID
+    # this number of tags (reverse of 4^(expected_tags))
+    # with a couple of extra orders of magnitude added
+    # so that SNPs can be included in the same cluster
+    my $threshold_distance = ceil( (log $expected_tags) / (log 4)  );
+    my @bases = qw{A C G T};
+
+    my $first_unique;
+    my $unique_hash;
+    my $read_length = 0;
+
+    my @cluster;
+
+#############################################################################
+###
+### MAIN LOOP
+###
+#############################################################################
+
+    open my $in_file, '<', $in_filename
+      or die "Can't open $in_filename: $OS_ERROR!";
+
+    my $first_read = get_read($in_file);
+
+    if ( defined $first_read ) {
+        $read_length = length $first_read->{r1s};
+        $unique_hash = get_unique( $in_file, $first_read, $threshold_distance );
+        $first_unique = $unique_hash->{uniq};
+        $first_read   = $unique_hash->{read};
+        push @cluster, $first_unique;
     }
-    else {
-        push @cluster, $new_unique;
-        if ( $new_unique->{count} > $first_unique->{count} ) {
+
+    while ( $unique_hash =
+        get_unique( $in_file, $first_read, $threshold_distance ) )
+    {
+
+        # Exit if no good hash could be returned
+        # (this happens if there are no more reads and the last reads
+        #  are poor quality)
+        last if ( !defined $unique_hash );
+        my $new_unique = $unique_hash->{uniq};
+        $first_read = $unique_hash->{read};
+
+        # Calculate probability that uniques are the same
+        my $unique_distance =
+          compare_uniques( $first_unique, $new_unique, $read_length );
+
+        if ( $unique_distance > $threshold_distance ) {
+            find_cluster_variants(
+                \@cluster,          $read_length,
+                $quality_threshold, $read_threshold
+            );
             $first_unique = $new_unique;
+            @cluster      = ($first_unique);
         }
+        else {
+            push @cluster, $new_unique;
+            if ( $new_unique->{count} > $first_unique->{count} ) {
+                $first_unique = $new_unique;
+            }
+        }
+
+        # Exit if no more reads (but the last reads were good, and so
+        # the last unique has been processed)
+        last if ( !defined $first_read );
     }
 
-    # Exit if no more reads (but the last reads were good, and so
-    # the last unique has been processed)
-    last if ( !defined($first_read) );
+    close $in_file or die "Couldn't close $in_filename\n";
+
+    return;
 }
 
-close $in_file;
-exit;
+#############################################################################
+###
+### SUBROUTINES
+###
+#############################################################################
+
+#############################################################################
+### Name:       COMPARE UNIQUES
+### Function:   Calculate distance between two unique sequences
+### Parameters: Two unique sequences and length of reads
+### Returns:    Distance between uniques
+#############################################################################
 
 sub compare_uniques {
     my ( $unique_1, $unique_2, $read_length ) = @_;
@@ -125,7 +164,7 @@ sub compare_uniques {
             $distance += $base_prob;
         }
     }
-    my $rounded_distance = sprintf( "%2.0f", $distance );
+    my $rounded_distance = sprintf '%2.0f', $distance;
     my $unique_distance =
       $high_quality_comparisons > 0
       ? ( $rounded_distance / $high_quality_comparisons ) * $read_length
@@ -134,14 +173,21 @@ sub compare_uniques {
     return $unique_distance;
 }
 
+#############################################################################
+### Name:       GET READ
+### Function:   Process read line into read record
+### Parameters: Input filehandle
+### Returns:    Hash of read sequences and qualities
+#############################################################################
+
 sub get_read {
     my ($in_file) = @_;
     my $seq_line;
     if ( !( $seq_line = <$in_file> ) ) { return; }
     chomp $seq_line;
     my ( $read1seq, $read1qual, $read2seq, $read2qual ) = split / /, $seq_line;
-    if ( !defined($read2seq) )  { $read2seq  = ""; }
-    if ( !defined($read2qual) ) { $read2qual = ""; }
+    if ( !defined $read2seq )  { $read2seq  = q{}; }
+    if ( !defined $read2qual ) { $read2qual = q{}; }
 
     $read1qual =~ s/B/@/g;
     $read2qual =~ s/B/@/g;
@@ -154,8 +200,16 @@ sub get_read {
     };
 }
 
+#############################################################################
+### Name:       GET UNIQUE
+### Function:   Load in identical reads as one unique and check for quality
+### Parameters: Input filehandle, first read for comparison,
+###             threshold distance for comparison
+### Returns:    Finished unique and first read of next unique
+#############################################################################
+
 sub get_unique {
-    my ( $in_file, $first_read ) = @_;
+    my ( $in_file, $first_read, $threshold_distance ) = @_;
 
     my $unique_ok = 0;
     my $new_read;
@@ -180,13 +234,13 @@ sub get_unique {
         calculate_median_qualities( $unique->{q} );
         my $high_qual_bases = 0;
         map {
-            if ( $_ > 0 ) { $high_qual_bases++; }
+            if ( $_ > 0 ) {$high_qual_bases++;}
         } @{ $unique->{q} };
         if ( $high_qual_bases > ( $threshold_distance * 2 ) ) {
             $unique_ok = 1;
         }
         else {
-            return if ( !defined($new_read) );
+            return if ( !defined $new_read );
 
             $first_read = $new_read;
             next;
@@ -200,18 +254,18 @@ sub get_unique {
 
 }
 
-
 #############################################################################
 ### Name:       FIND CLUSTER VARIANTS
 ### Function:   for a set of uniques assigned to a particular cluster,
 ###             correct errors and call variants,
 ###             and output 'alleles' for this cluster
 ### Parameters: cluster_ref  - array of uniques to process
+###             read_length, quality_threshold, read_threshold
 ### Returns:    Nothing (prints sequences to STDIN)
 #############################################################################
 
 sub find_cluster_variants {
-    my ( $cluster_ref, $read_length ) = @_;
+    my ( $cluster_ref, $read_length, $quality_threshold, $read_threshold ) = @_;
 
     my @tag_bases;
     my $total_unique_count = 0;
@@ -237,7 +291,7 @@ sub find_cluster_variants {
     }
 
     # Take averages of base qualities for each base at each position
-    foreach my $base (qw/A C G T N/) {
+    foreach my $base (qw{A C G T N}) {
 
         foreach my $pos ( 0 .. $#tag_bases ) {
 
@@ -246,7 +300,7 @@ sub find_cluster_variants {
             # and there is more than one unique for this base
             # (so not singleton high qualities, which may be errors)
 
-            if (   ( defined( $unique_counts_by_pos[$pos]{$base} ) )
+            if (   ( defined $unique_counts_by_pos[$pos]{$base} )
                 && ( $unique_counts_by_pos[$pos]{$base} > 1 ) )
             {
                 $tag_bases[$pos]{$base} =
@@ -272,10 +326,10 @@ sub find_cluster_variants {
 
             foreach my $pos ( 0 .. $unique1_length - 1 ) {
 
-                my $base1 = substr( $unique1->{seq}, $pos, 1 );
+                my $base1 = substr $unique1->{seq}, $pos, 1;
 
                 if ( $tag_bases[$pos]{$base1} > $quality_threshold ) {
-                    my $base2 = substr( $unique2->{seq}, $pos, 1 );
+                    my $base2 = substr $unique2->{seq}, $pos, 1;
                     next UNIQUE2
                       if ( ( $tag_bases[$pos]{$base2} > $quality_threshold )
                         && ( $base1 ne $base2 ) );
@@ -294,7 +348,6 @@ sub find_cluster_variants {
     return if ( keys %alleles == 0 );
 
     my $passed = 0;
-
     # Summarise and output alleles
     foreach my $seq ( sort keys %alleles ) {
         my $count = 0;
@@ -357,22 +410,22 @@ sub find_cluster_variants {
 
         # Output tag with qualities, counts and high quality paired ends
         $passed = 1;
-        print "$seq ";
+        print "$seq " or die "Can't output sequence\n";
         foreach my $qual (@seq_quals) {
-            print chr( ( $qual / $count ) + 64 );
+            print chr ( $qual / $count ) + 64 or die "Can't output quality\n";
         }
-        print " $count ";
-        print scalar keys %pairs;
-        print "\n";
+        print " $count " or die "Can't output read count\n";
+        print scalar keys %pairs or die "Can't output fragment count\n";
+        print "\n" or die "Can't output newline\n";
         map {
-            if ( $_ ne "" )
+            if ( $_ ne q{} )
             {
-                print "\t$_ " . scalar @{ $pairs{$_} } . "\n";
+                print "\t$_ " . scalar @{ $pairs{$_} } . "\n" or die "Can't output paired ends\n";
             }
           }
           sort keys %pairs;
     }
-    if ($passed) { print "\n" }
+    if ($passed) { print "\n" or die "Can't output end of tag record\n"; }
     return;
 }
 
@@ -393,7 +446,7 @@ sub calculate_median_qualities {
 
     foreach my $qualseq ( @{$qual_list_ref} ) {
         foreach my $i ( 0 .. length($qualseq) - 1 ) {
-            push @{ $full_quals[$i] }, ord( substr( $qualseq, $i, 1 ) ) - 64;
+            push @{ $full_quals[$i] }, ord( substr $qualseq, $i, 1 ) - 64;
         }
     }
 
@@ -406,3 +459,84 @@ sub calculate_median_qualities {
     }
     return;
 }
+
+__END__
+
+#############################################################################
+###
+### DOCUMENTATION
+###
+#############################################################################
+
+=head1 NAME
+
+RADtags - Identifies RAD tags in Illumina reads from RAD samples
+
+=head1 VERSION
+
+This documentation refers to RADtools version 0.1.
+
+=head1 SYNOPSIS
+
+=over 8
+
+=item RADtags -i file -e expected_tags [options]
+
+=back
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--help>
+
+Print a brief help message and exit
+
+=item B<--usage>
+
+Print concise usage and exit
+
+=item B<--man>
+
+Print the manual page and exit
+
+=item B<--version>
+
+Print version number and exit
+
+=item B<-i, --in>
+
+File containing single end Illumina RAD reads in FASTQ format (required)
+
+=item B<-e, --expected_tags>
+
+Estimate of number of tags expected in sample (required)
+
+=back
+
+=head1 DESCRIPTION
+
+B<RADtags> accepts as input read files output by RADpools and an estimate of the number of tags expected in the sample. It generates a set of candidate RAD tags for the sample, correcting errors in low quality reads and calling variants. Tags are associated with a read count and a fragment count, which is the number of unique single/paired end combinations seen. Qualities are called for tags. Paired ends are output for each tag, with read counts for each paired end fragment.
+
+=head1 AUTHOR
+
+John Davey <john.davey@ed.ac.uk>
+
+=head1 LICENCE AND COPYRIGHT
+
+Copyright 2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+=cut

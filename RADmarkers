@@ -1,362 +1,569 @@
 #!/usr/bin/env perl
 
-# Copyright 2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
-
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-#############################################################################
-
 # RADmarkers
 # Takes all the files in a folder with a .tags suffix and sorts the
 # sequences into clusters, representing all alleles of tags
 #
+# History:
 # 16/05/10 First public version
 # 04/07/10 Bug fixes
 # 05/07/10 Added fragments option - defaults to using read counts but with
 #          -f will use fragment counts
 # 03/08/10 Incorporated into RADtools
+# 18/08/10 Run through perlcritic, tidied up options, added POD,
+#          added main() for testing and refactored main into subroutines
+
+#############################################################################
+###
+### PREAMBLE
+###
+#############################################################################
 
 use strict;
 use warnings;
-use Carp;
-use English;
-use Getopt::Long;
-use Data::Dumper;
+use English qw(-no_match_vars );
+use Getopt::Long qw(:config bundling no_auto_abbrev auto_version);
+use Pod::Usage;
 
-# Autoflush output so reporting on progress works
-$| = 1;
+# Would like to use Carp, but an outstanding bug causes cryptic errors
+# when using caller(), so using die until this is fixed
+# http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-my $qual_threshold      = 0;
-my $tag_count_threshold = 0;
-my $kmer_length         = 4;
-my $hamming_threshold   = 0;
-my $end_tagfiles        = ".tags";
-my $snpsout             = 0;
-my $qualsout            = 0;
-my $verbose             = 0;
-my $fragments           = 0;
-my $include_singletons  = 0;         # Tags only in one individual
+local $main::VERSION    = 0.1;    # Used by Getopt::Long to provide --version
+local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
-my $options_okay = GetOptions(
+main(@ARGV) unless caller;        # So test suite can call script
 
-    #    'qual_threshold=i'      => \$qual_threshold,
-    'tag_count_threshold=i' => \$tag_count_threshold,
-    'kmer_length=i'         => \$kmer_length,
-    'hamming_threshold=i'   => \$hamming_threshold,
-    'end_tagfiles=s'        => \$end_tagfiles,
-    'snpsout'               => \$snpsout,
-    'outquals'              => \$qualsout,
-    'fragments'             => \$fragments,
-    'include_singletons'    => \$include_singletons,
-    'verbose'               => \$verbose,
-);
+sub main {
 
-croak
-"\nUsage: perl make_tag_clusters_from_rad_sequences.pl -t tag_count_threshold -h hamming_distance_threshold -e tagfile_extension -s output_snps -o output_quals -k kmer_length -v verbose\n"
-  if !$options_okay;
+    # Set up default options
 
-opendir( my $tagdir, "." );
-my @tag_filenames = grep /($end_tagfiles)$/, readdir($tagdir);
-closedir($tagdir);
+    my $help  = 0;
+    my $usage = 0;
+    my $man   = 0;
 
-my %tag_clusters;
+    my $end_tagfiles = '.tags';
 
-my %tags;
-my %pair_clusters;
-my @individuals;
+    my $verbose   = 0;
+    my $snpsout   = 0;
+    my $qualsout  = 0;
+    my $fragments = 0;
 
-my %tag_count;
-my %read_count;
+    my $tag_count_threshold = 0;
+    my $hamming_threshold   = 0;
 
-my %kmer_lookup;
+    my $include_singletons = 0;    # Tags only in one individual
 
-my $max_tag_length = 0;
-my $min_tag_length = 10000000000;
-my $new_cluster_id = 0;
+    my $options_okay = GetOptions(
 
-my $species = "";
-foreach my $tag_filename ( sort @tag_filenames ) {
-    open my $tag_file, "<", $tag_filename
-      or croak "Can't open $tag_filename: $OS_ERROR!\n";
-    my $individual = ( split /_/, $tag_filename )[1];
-    $species = ( split /_/, $tag_filename )[0];
-    push @individuals, $individual;
-    my %cluster;
+        'help|?' => \$help,
+        'usage'  => \$usage,
+        'man'    => \$man,
 
-    #    my %pairs;
+        'end_tagfiles|e=s' => \$end_tagfiles,
 
-    if ($verbose) { print "Loading tags from $individual...\n"; }
-    while ( my $tag_line = <$tag_file> ) {
-        chomp $tag_line;
+        'verbose|v'   => \$verbose,
+        'snpsout|s'   => \$snpsout,
+        'qualsout|q'  => \$qualsout,
+        'fragments|f' => \$fragments,
 
-        # If cluster is fully loaded, process cluster
-        if ( $tag_line eq "" ) {
-            my %cluster_ids;
+        'tag_count_threshold|t=i' => \$tag_count_threshold,
+        'hamming_threshold|h=i'   => \$hamming_threshold,
 
-            # Get existing cluster IDs for these sequences
-          SEQUENCE:
-            foreach my $sequence ( keys %cluster ) {
+        'include_singletons|i' => \$include_singletons,
 
-                # Check for exact match
-                if ( defined( $tags{$sequence}{cluster} ) ) {
-                    $cluster_ids{ $tags{$sequence}{cluster} }++;
-                    next SEQUENCE;
+    ) or pod2usage( -verbose => 0 );
+
+    pod2usage( -verbose => 0 ) if $usage;
+    pod2usage( -verbose => 1 ) if $help;
+    pod2usage( -verbose => 2 ) if $man;
+
+    my %tag_clusters;
+    my %tags;
+    my @individuals;
+
+#############################################################################
+###
+### MAIN LOOP
+###
+#############################################################################
+
+    opendir my $tagdir, q{.};
+    my @tag_filenames = grep { /($end_tagfiles)$/ } readdir $tagdir;
+    closedir $tagdir;
+
+    generate_tag_clusters(
+        {
+            tag_filenames       => \@tag_filenames,
+            tag_clusters        => \%tag_clusters,
+            tags                => \%tags,
+            individuals         => \@individuals,
+            hamming_threshold   => $hamming_threshold,
+            tag_count_threshold => $tag_count_threshold,
+            fragments           => $fragments,
+            verbose             => $verbose,
+        }
+    );
+
+    @individuals = sort @individuals;
+
+    if ($verbose) {
+        print scalar( keys %tag_clusters )
+          . ' clusters found from '
+          . scalar( keys %tags )
+          . " tags\n"
+          or die "Can't print\n";
+    }
+
+    my %cluster_summary;
+    summarise_tag_clusters(
+        {
+            tag_clusters       => \%tag_clusters,
+            individuals        => \@individuals,
+            cluster_summary    => \%cluster_summary,
+            tags               => \%tags,
+            include_singletons => $include_singletons,
+        }
+    );
+
+    if ( $verbose && !$include_singletons ) {
+        print scalar( keys %tag_clusters )
+          . ' clusters found from '
+          . scalar( keys %tags )
+          . " tags after tags found in only one individual removed\n";
+    }
+
+    foreach my $tag_count ( sort { $a <=> $b } keys %cluster_summary ) {
+        print "$tag_count $cluster_summary{$tag_count}{count}\n";
+
+        foreach my $seg_pattern (
+            sort
+            keys %{ $cluster_summary{$tag_count}{segs} }
+          )
+        {
+            print_seg_tags(
+                {
+                    seg_pattern => $seg_pattern,
+                    seg_tags =>
+                      $cluster_summary{$tag_count}{segs}{$seg_pattern},
+                    ind       => \@individuals,
+                    qualsout  => $qualsout,
+                    snpsout   => $snpsout,
+                    fragments => $fragments,
                 }
+            );
+            print "\n";
+        }
+    }
+    return;
+}
 
-                # Check for post kmer match
-                my $kmer_end = substr( $sequence, $kmer_length );
-                if ( defined( $kmer_lookup{$kmer_end}{cluster} ) ) {
-                    $cluster_ids{ $kmer_lookup{$kmer_end}{cluster} }++;
-                    next SEQUENCE;
-                }
+#############################################################################
+###
+### SUBROUTINES
+###
+#############################################################################
 
-                next SEQUENCE if ( $hamming_threshold == 0 );
+#############################################################################
+### Name:       GENERATE TAG CLUSTERS
+### Function:   Cluster tags across all individuals
+### Parameters: tag_filenames       - files containing RAD tags from RADtags
+###             tag_clusters        - hash of clusters containing tags
+###             tags                - hash of tags alone for reference
+###             individuals         - list of sample names
+###             hamming_threshold   - cutoff for Hamming distance
+###             tag_count_threshold - throw away tags with counts below this
+###             fragments           - if set, output frag counts, not reads
+###             verbose             - output progress messages
+### Returns:    Nothing (fills tag_clusters and tags)
+#############################################################################
 
-                # Check for Hamming distance matches
-                foreach my $tag_seq ( keys %tags ) {
-                    next if ( $tag_seq eq $sequence );
-                    next
-                      if ( ( defined( $tags{$tag_seq}{cluster} ) )
-                        && (
-                            defined( $cluster_ids{ $tags{$tag_seq}{cluster} } )
-                        ) );
-                    my $hamming = ( $tag_seq ^ $sequence ) =~ tr/\001-\255//;
-                    if ( $hamming <= $hamming_threshold ) {
-                        if ( defined( $tags{$tag_seq}{cluster} ) ) {
-                            $cluster_ids{ $tags{$tag_seq}{cluster} }++;
-                        }
-                    }
-                }
+sub generate_tag_clusters {
 
-            }
-            my $this_cluster_id = -1;
+    my ($arg_ref) = @_;
 
-            # If matching previous cluster IDs, collapse all these
-            # clusters into one cluster
-            if ( keys %cluster_ids > 0 ) {
-                my @cluster_list = sort { $a <=> $b } keys %cluster_ids;
-                my $smallest_id = $cluster_list[0];
-                foreach my $cluster_id (@cluster_list) {
-                  CLUSTERSEQ:
-                    foreach
-                      my $sequence ( keys %{ $tag_clusters{$cluster_id} } )
+    my $file_ref            = $arg_ref->{tag_filenames};
+    my $tag_clus_ref        = $arg_ref->{tag_clusters};
+    my $tags_ref            = $arg_ref->{tags};
+    my $ind_ref             = $arg_ref->{individuals};
+    my $hamming_threshold   = $arg_ref->{hamming_threshold};
+    my $tag_count_threshold = $arg_ref->{tag_count_threshold};
+    my $fragments           = $arg_ref->{fragments};
+    my $verbose             = $arg_ref->{verbose};
+
+    my $species = q{};
+    my $new_cluster_id = 0;
+
+    foreach my $tag_filename ( sort @{$file_ref} ) {
+        open my $tag_file, '<', $tag_filename
+          or die "Can't open $tag_filename: $OS_ERROR!\n";
+        my $individual = ( split /_/, $tag_filename )[1];
+        $species = ( split /_/, $tag_filename )[0];
+        push @{$ind_ref}, $individual;
+
+        my %cluster;
+
+        if ($verbose) { print "Loading tags from $individual...\n"; }
+        while ( my $tag_line = <$tag_file> ) {
+            chomp $tag_line;
+
+            # If cluster is fully loaded, process cluster
+            if ( $tag_line eq q{} ) {
+                my %cluster_ids;
+                get_cluster_ids(
                     {
-                        $tags{$sequence}{cluster} = $smallest_id;
+                        cluster           => \%cluster,
+                        cluster_ids       => \%cluster_ids,
+                        tags              => $tags_ref,
+                        hamming_threshold => $hamming_threshold,
+                    }
+                );
 
-                        my $kmer_end = substr( $sequence, 4 );
-                        $kmer_lookup{$kmer_end}{cluster} = $smallest_id;
-                        next CLUSTERSEQ if ( $smallest_id eq $cluster_id );
-                        foreach my $individual (
-                            keys %{ $tag_clusters{$cluster_id}{$sequence} } )
+                my $this_cluster_id = -1;
+
+                # If matching previous cluster IDs, collapse all these
+                # clusters into one cluster
+                if ( keys %cluster_ids > 0 ) {
+
+                    $this_cluster_id = collapse_existing_clusters(
                         {
-                            $tag_clusters{$smallest_id}{$sequence}{$individual}
-                              {count} =
-                              $tag_clusters{$cluster_id}{$sequence}{$individual}
-                              {count};
-                            $tag_clusters{$smallest_id}{$sequence}{$individual}
-                              {unique} =
-                              $tag_clusters{$cluster_id}{$sequence}{$individual}
-                              {unique};
-                            $tag_clusters{$smallest_id}{$sequence}{$individual}
-                              {qual} =
-                              $tag_clusters{$cluster_id}{$sequence}{$individual}
-                              {qual};
-
+                            tag_clusters => $tag_clus_ref,
+                            cluster_ids  => \%cluster_ids,
+                            tags         => $tags_ref,
                         }
-                    }
-                    if ( $cluster_id ne $smallest_id ) {
-                        delete $tag_clusters{$cluster_id};
-                    }
+                    );
                 }
-                $this_cluster_id = $smallest_id;
-            }
 
-            # If not matching any IDs, make a new cluster
-            else {
-                $new_cluster_id++;
-                $this_cluster_id = $new_cluster_id;
-            }
-
-            foreach my $sequence ( keys %cluster ) {
-                foreach my $individual ( keys %{ $cluster{$sequence} } ) {
-
-                    $tag_clusters{$this_cluster_id}{$sequence}{$individual}
-                      {count} = $cluster{$sequence}{$individual}{count};
-                    $tag_clusters{$this_cluster_id}{$sequence}{$individual}
-                      {unique} = $cluster{$sequence}{$individual}{unique};
-                    $tag_clusters{$this_cluster_id}{$sequence}{$individual}
-                      {qual} = $cluster{$sequence}{$individual}{qual};
-
+                # If not matching any IDs, make a new cluster
+                else {
+                    $new_cluster_id++;
+                    $this_cluster_id = $new_cluster_id;
                 }
-                $tags{$sequence}{cluster} = $this_cluster_id;
 
-                my $kmer_end = substr $sequence, 4;
-                $kmer_lookup{$kmer_end}{cluster} = $this_cluster_id;
+                store_current_cluster(
+                    {
+                        cluster         => \%cluster,
+                        tag_cluster     => $tag_clus_ref,
+                        this_cluster_id => $this_cluster_id,
+                        tags            => $tags_ref,
+                    }
+                );
+
+                # Empty cluster and get more input
+                %cluster = ();
+
+                next;
             }
 
-            # Empty cluster and get more input
-            %cluster = ();
+            next if ( $tag_line =~ /^\s/ );
 
-            #            %pairs   = ();
+            load_tag_into_cluster(
+                {
+                    tag_line            => $tag_line,
+                    tags                => $tags_ref,
+                    cluster             => \%cluster,
+                    individual          => $individual,
+                    tag_count_threshold => $tag_count_threshold,
+                    fragments           => $fragments,
+                }
+            );
+        }
+
+        close $tag_file or die "Can't close tag file\n";
+    }
+    return;
+}
+
+#############################################################################
+### Name:       GET CLUSTER IDS
+### Function:   Finds matching clusters for current set of sequences
+### Parameters: cluster           - the set of tags to check
+###             cluster_ids       - the list of IDs to fill
+###             tags              - already clustered tags to check against
+###             hamming threshold - cutoff Hamming distance
+### Returns:   nothing (fills cluster_ids)
+#############################################################################
+
+sub get_cluster_ids {
+    my ($arg_ref) = @_;
+
+    my $clus_ref          = $arg_ref->{cluster};
+    my $clus_ids_ref      = $arg_ref->{cluster_ids};
+    my $tags_ref          = $arg_ref->{tags};
+    my $hamming_threshold = $arg_ref->{hamming_threshold};
+
+    # Get existing cluster IDs for these sequences
+  SEQUENCE:
+    foreach my $sequence ( keys %{$clus_ref} ) {
+
+        # Check for exact match
+        if ( defined( $tags_ref->{$sequence}{cluster} ) ) {
+            $clus_ids_ref->{ $tags_ref->{$sequence}{cluster} }++;
+            next SEQUENCE;
+        }
+
+        next SEQUENCE if ( $hamming_threshold == 0 );
+
+        # Check for Hamming distance matches
+        foreach my $tag_seq ( keys %{$tags_ref} ) {
+            next if ( $tag_seq eq $sequence );
+            next
+              if (
+                ( defined( $tags_ref->{$tag_seq}{cluster} ) )
+                && (
+                    defined(
+                        $clus_ids_ref->{ $tags_ref->{$tag_seq}{cluster} }
+                    )
+                )
+              );
+            my $hamming = ( $tag_seq ^ $sequence ) =~ tr/\001-\255//;
+            if ( $hamming <= $hamming_threshold ) {
+                if ( defined( $tags_ref->{$tag_seq}{cluster} ) ) {
+                    $clus_ids_ref->{ $tags_ref->{$tag_seq}{cluster} }++;
+                }
+            }
+        }
+    }
+    return;
+}
+
+#############################################################################
+### Name:       COLLAPSE EXISTING CLUSTERS
+### Function:   Joins clusters sharing a tag sequence into one cluster
+### Parameters: tag_clusters - hash of clustered tags to revise
+###             cluster_ids  - hash of clusters to combine
+###             tags         - hash of tags for reference
+### Returns:    ID of final cluster
+#############################################################################
+
+sub collapse_existing_clusters {
+    my ($arg_ref) = @_;
+
+    my $tag_clus_ref    = $arg_ref->{tag_clusters};
+    my $cluster_ids_ref = $arg_ref->{cluster_ids};
+    my $tags_ref        = $arg_ref->{tags};
+
+    my @cluster_list =
+      sort { $a <=> $b } keys %{$cluster_ids_ref};
+    my $smallest_id = $cluster_list[0];
+    foreach my $cluster_id (@cluster_list) {
+      CLUSTERSEQ:
+        foreach my $sequence ( keys %{ $tag_clus_ref->{$cluster_id} } ) {
+            $tags_ref->{$sequence}{cluster} = $smallest_id;
+
+            next CLUSTERSEQ if ( $smallest_id eq $cluster_id );
+            foreach
+              my $ind ( keys %{ $tag_clus_ref->{$cluster_id}{$sequence} } )
+            {
+                $tag_clus_ref->{$smallest_id}{$sequence}{$ind}{count} =
+                  $tag_clus_ref->{$cluster_id}{$sequence}{$ind}{count};
+                $tag_clus_ref->{$smallest_id}{$sequence}{$ind}{unique} =
+                  $tag_clus_ref->{$cluster_id}{$sequence}{$ind}{unique};
+                $tag_clus_ref->{$smallest_id}{$sequence}{$ind}{qual} =
+                  $tag_clus_ref->{$cluster_id}{$sequence}{$ind}{qual};
+
+            }
+        }
+        if ( $cluster_id ne $smallest_id ) {
+            delete $tag_clus_ref->{$cluster_id};
+        }
+    }
+    return $smallest_id;
+}
+
+#############################################################################
+### Name:       STORE CURRENT CLUSTER
+### Function:   Add new cluster sequences to the collapsed cluster
+### Parameters: cluster         - cluster to add
+###             tag_clusters    - hash of clustered tags to add to
+###             this_cluster_id - ID of the cluster to add to
+###             tags            - hash of tags for reference
+### Returns:    nothing (fills tag_clusters)
+#############################################################################
+
+sub store_current_cluster {
+    my ($arg_ref)       = @_;
+    my $clus_ref        = $arg_ref->{cluster};
+    my $tag_clus_ref    = $arg_ref->{tag_cluster};
+    my $this_cluster_id = $arg_ref->{this_cluster_id};
+    my $tags_ref        = $arg_ref->{tags};
+
+    foreach my $sequence ( keys %{$clus_ref} ) {
+        foreach my $individual ( keys %{ $clus_ref->{$sequence} } ) {
+
+            $tag_clus_ref->{$this_cluster_id}{$sequence}{$individual}{count} =
+              $clus_ref->{$sequence}{$individual}{count};
+            $tag_clus_ref->{$this_cluster_id}{$sequence}{$individual}{unique} =
+              $clus_ref->{$sequence}{$individual}{unique};
+            $tag_clus_ref->{$this_cluster_id}{$sequence}{$individual}{qual} =
+              $clus_ref->{$sequence}{$individual}{qual};
+
+        }
+        $tags_ref->{$sequence}{cluster} = $this_cluster_id;
+    }
+    return;
+}
+
+#############################################################################
+### Name:       LOAD TAG INTO CLUSTER
+### Function:   Process tag line from file into current fresh cluster
+### Parameters: tag_line            - unprocessed tag line from file
+###             tags                - tags hash for reference
+###             cluster             - current cluster to add tag to
+###             individual          - name of current sample
+###             tag_count_threshold - throw away tags with counts below this
+###             fragments           - if set, use fragment count, not reads
+### Returns:    nothing (fills cluster, tags)
+#############################################################################
+
+sub load_tag_into_cluster {
+    my ($arg_ref) = @_;
+
+    my $tag_line            = $arg_ref->{tag_line};
+    my $tags_ref            = $arg_ref->{tags};
+    my $clus_ref            = $arg_ref->{cluster};
+    my $individual          = $arg_ref->{individual};
+    my $tag_count_threshold = $arg_ref->{tag_count_threshold};
+    my $fragments           = $arg_ref->{fragments};
+
+    my ( $tag_seq, $tag_qual, $tag_read_count, $tag_unique_count ) = split / /,
+      $tag_line;
+
+    # Reject tags containing P2 adapter site
+    return if ( $tag_seq =~ m/GATCGGA/ );
+
+    my $count = $fragments ? $tag_unique_count : $tag_read_count;
+    return if ( $count < $tag_count_threshold );
+
+    $tags_ref->{$tag_seq}{ind}{$individual}{count}  = $tag_read_count;
+    $tags_ref->{$tag_seq}{ind}{$individual}{unique} = $tag_unique_count;
+    $tags_ref->{$tag_seq}{ind}{$individual}{qual}   = $tag_qual;
+
+    $clus_ref->{$tag_seq}{$individual}{count}       = $tag_read_count;
+    $clus_ref->{$tag_seq}{$individual}{unique}      = $tag_unique_count;
+    $clus_ref->{$tag_seq}{$individual}{qual}        = $tag_qual;
+
+    return;
+}
+
+#############################################################################
+### Name:       SUMMARISE TAG CLUSTERS
+### Function:   Get segregation patterns and sort alleles for each cluster
+### Parameters: tag_clusters       - hash of clustered tags
+###             individuals        - names of samples
+###             cluster_summary    - hash of summary information to fill
+###             tags               - hash of tags for reference
+###             include_singletons - if set, report on tags present in
+###                                  only one individual
+### Returns:    nothing (fills cluster_summary)
+#############################################################################
+
+sub summarise_tag_clusters {
+    my ($arg_ref) = @_;
+
+    my $clus_ref    = $arg_ref->{tag_clusters};
+    my $ind_ref     = $arg_ref->{individuals};
+    my $summary_ref = $arg_ref->{cluster_summary};
+    my $tags_ref    = $arg_ref->{tags};
+    my $singletons  = $arg_ref->{include_singletons};
+
+    foreach my $tag_cluster ( sort { $a <=> $b } keys %{$clus_ref} ) {
+        my @seg_patterns;
+        my $seg_pattern = q{};
+        foreach my $tag_sequence ( sort keys %{ $clus_ref->{$tag_cluster} } ) {
+            foreach my $individual ( @{$ind_ref} ) {
+                my $individual_present =
+                  defined(
+                    $clus_ref->{$tag_cluster}{$tag_sequence}{$individual} )
+                  ? 1
+                  : 0;
+                $seg_pattern .= $individual_present;
+            }
+
+            if (   ( !$singletons )
+                && ( ( $seg_pattern =~ tr/1// ) == 1 ) )
+            {
+                delete $tags_ref->{$tag_sequence};
+                delete $clus_ref->{$tag_cluster}{$tag_sequence};
+                $seg_pattern = q{};
+                next;
+            }
+
+            push @seg_patterns,
+              {
+                seg_pattern => $seg_pattern,
+                sequence    => $tag_sequence,
+                individuals => $clus_ref->{$tag_cluster}{$tag_sequence},
+              };
+
+            $seg_pattern = q{};
+
+        }
+        if ( @seg_patterns == 0 ) {
+            delete $clus_ref->{$tag_cluster};
             next;
         }
 
-        if ( $tag_line =~ /^\s/ ) {
+        my $tag_count = keys %{ $clus_ref->{$tag_cluster} };
+        $summary_ref->{$tag_count}{count}++;
 
-     #            my ( $start, $pair_seq, $pair_count ) = split /\s/, $tag_line;
-     #            $pairs{$pair_seq} = $pair_count;
-            next;
+        my @sorted_alleles;
+        $seg_pattern = q{};
+        foreach
+          my $seg_pattern_ref ( sort { $a->{seg_pattern} <=> $b->{seg_pattern} }
+            @seg_patterns )
+        {
+            push @sorted_alleles, $seg_pattern_ref;
+            $seg_pattern .= $seg_pattern_ref->{seg_pattern} . q{ };
         }
-        my ( $tag_seq, $tag_qual, $tag_read_count, $tag_unique_count ) =
-          split / /,
-          $tag_line;
+        $summary_ref->{$tag_count}{segs}{$seg_pattern}{count}++;
 
-        # Reject tags containing P2 adapter site
-        next if ( $tag_seq =~ m/GATCGGA/ );
-
-        my $count = $fragments ? $tag_unique_count : $tag_read_count;
-        next if ( $count < $tag_count_threshold );
-
-        # Quality trim tag
-        my $trim_qual           = "";
-        my $qual_threshold_char = chr( $qual_threshold + 64 );
-
-        # The h at the start of the regular expression is a hack.
-        # If Q=30, char is ^. This searches for [^-h] which is NOT h,
-        # and so lots of high quality reads get thrown away.
-        # This now searches for h OR char to h.
-        if ( $tag_qual =~ m{(\A[h$qual_threshold_char-h]+)} ) {
-            $trim_qual = $1;
-        }
-
-        my $trim_seq = substr( $tag_seq, 0, length($trim_qual) );
-
-        $tags{$trim_seq}{ind}{$individual}{count}  = $tag_read_count;
-        $tags{$trim_seq}{ind}{$individual}{unique} = $tag_unique_count;
-        $tags{$trim_seq}{ind}{$individual}{qual}   = $trim_qual;
-        $cluster{$trim_seq}{$individual}{count}    = $tag_read_count;
-        $cluster{$trim_seq}{$individual}{unique}   = $tag_unique_count;
-        $cluster{$trim_seq}{$individual}{qual}     = $trim_qual;
-
-        if ( length($trim_seq) > $max_tag_length ) {
-            $max_tag_length = length($trim_seq);
-        }
-        if ( length($trim_seq) < $min_tag_length ) {
-            $min_tag_length = length($trim_seq);
-        }
+        push @{ $summary_ref->{$tag_count}{segs}{$seg_pattern}{tags} },
+          \@sorted_alleles;
     }
-    close $tag_file;
-}
-@individuals = sort @individuals;
-
-
-
-if ($verbose) {
-    print scalar( keys %tag_clusters )
-      . " clusters found from "
-      . scalar( keys %tags )
-      . " tags\n";
+    return;
 }
 
-my %cluster_summary;
-
-foreach my $tag_cluster ( sort { $a <=> $b } keys %tag_clusters ) {
-    my @seg_patterns;
-    my $seg_pattern = "";
-    foreach my $tag_sequence ( sort keys %{ $tag_clusters{$tag_cluster} } ) {
-        foreach my $individual ( @individuals ) {
-            my $individual_present =
-              defined( $tag_clusters{$tag_cluster}{$tag_sequence}{$individual} )
-              ? 1
-              : 0;
-            $seg_pattern .= $individual_present;
-        }
-
-        if ((!$include_singletons) && (($seg_pattern =~ tr/1//) == 1)) {
-            delete $tags{$tag_sequence};
-            delete $tag_clusters{$tag_cluster}{$tag_sequence};
-            $seg_pattern = "";
-            next;
-        };
-
-        push @seg_patterns,
-          {
-            seg_pattern => $seg_pattern,
-            sequence    => $tag_sequence,
-            individuals => $tag_clusters{$tag_cluster}{$tag_sequence},
-          };
-
-        $seg_pattern = "";
-
-    }
-    if (@seg_patterns == 0) {
-        delete $tag_clusters{$tag_cluster};
-        next;
-    };
-
-    my $tag_count = keys %{ $tag_clusters{$tag_cluster} };
-    $cluster_summary{$tag_count}{count}++;
-
-    my @sorted_alleles;
-    $seg_pattern = "";
-    foreach
-      my $seg_pattern_ref ( sort { $a->{seg_pattern} <=> $b->{seg_pattern} }
-        @seg_patterns )
-    {
-        push @sorted_alleles, $seg_pattern_ref;
-        $seg_pattern .= $seg_pattern_ref->{seg_pattern} . " ";
-    }
-    $cluster_summary{$tag_count}{segs}{$seg_pattern}{count}++;
-
-    push @{ $cluster_summary{$tag_count}{segs}{$seg_pattern}{tags} },
-      \@sorted_alleles;
-}
-
-if ($verbose && !$include_singletons) {
-    print scalar( keys %tag_clusters )
-      . " clusters found from "
-      . scalar( keys %tags )
-      . " tags after tags found in only one individual removed\n";
-}
-
-foreach my $tag_count ( sort { $a <=> $b } keys %cluster_summary ) {
-    print "$tag_count $cluster_summary{$tag_count}{count}\n";
-
-    foreach my $seg_pattern (
-        sort
-        keys %{ $cluster_summary{$tag_count}{segs} }
-      )
-    {
-        print_seg_tags( $seg_pattern,
-            $cluster_summary{$tag_count}{segs}{$seg_pattern},
-            \@individuals, );
-        print "\n";
-    }
-}
+#############################################################################
+### Name:       PRINT SEG TAGS
+### Function:   Output tags for one segregation pattern
+### Parameters: seg_pattern - segregation pattern to output
+###             seg_tags    - tags for this segregation pattern
+###             ind         - names of samples
+###             qualsout    - if set, output qualities
+###             snpsout     - if set, output SNPs
+###             fragments   - if set, output fragment counts, not reads
+### Returns:    nothing (writes to STDOUT)
+#############################################################################
 
 sub print_seg_tags {
-    my ( $seg_pattern, $seg_tags_ref, $ind_ref ) = @_;
+    my ($arg_ref) = @_;
+
+    my $seg_pattern  = $arg_ref->{seg_pattern};
+    my $seg_tags_ref = $arg_ref->{seg_tags};
+    my $ind_ref      = $arg_ref->{ind};
+    my $qualsout     = $arg_ref->{qualsout};
+    my $snpsout      = $arg_ref->{snpsout};
+    my $fragments    = $arg_ref->{fragments};
 
     print "$seg_pattern ";
-    printf "%3s ", $seg_tags_ref->{count};
+    printf '%3s ', $seg_tags_ref->{count};
     print is_mirror($seg_pattern);
     print "\n";
-
     print "\t";
-    print " " x $max_tag_length;
-    print "    ";
-    map {print $_; if (length($_)<7) {print " " x (7-length($_));} else {print " ";}} sort @individuals;
+    print q{ } x length @{ $seg_tags_ref->{tags} }[0]->[0]->{sequence};
+    print q{    };
+    foreach my $ind ( sort @{$ind_ref} ) {
+        if ( length($ind) < 3 ) {
+            print q{ } x ( 3 - length $ind );
+            print "$ind    ";
+        }
+        else {
+            print $ind;
+            if ( ( length $ind ) < 7 ) { print q{ } x ( 7 - ( length $ind ) ); }
+            else                       { print q{ }; }
+        }
+    }
     print "\n";
 
     foreach my $tag_ref ( @{ $seg_tags_ref->{tags} } ) {
@@ -364,19 +571,32 @@ sub print_seg_tags {
         foreach my $allele_ref ( @{$tag_ref} ) {
 
             print "\t$allele_ref->{sequence}    ";
-            my $padding = $max_tag_length - length( $allele_ref->{sequence} );
-            print " " x $padding;
-            print_tag_counts( $allele_ref->{individuals}, $ind_ref, $qualsout );
+            print_tag_counts( $allele_ref->{individuals},
+                $ind_ref, $qualsout, $fragments );
         }
 
-        if ($snpsout) { print "\n"; print_seg_snps( $tag_ref, $ind_ref ); }
+        if ($snpsout) {
+            print "\n";
+            print_seg_snps( $tag_ref, $ind_ref, $fragments );
+        }
 
         print "\n";
     }
+    return;
 }
 
+#############################################################################
+### Name:       PRINT TAG COUNTS
+### Function:   Outputs read/fragment counts and qualities for one tag
+### Parameters: seq_ref   - tag information
+###             ind_ref   - names of samples
+###             quals     - if set, output qualities
+###             fragments - if set, output fragment counts, not reads
+### Returns:    nothing (writes to STDOUT)
+#############################################################################
+
 sub print_tag_counts {
-    my ( $seq_ref, $ind_ref, $quals ) = @_;
+    my ( $seq_ref, $ind_ref, $quals, $fragments ) = @_;
     foreach my $individual ( sort @{$ind_ref} ) {
 
         my $count =
@@ -384,10 +604,10 @@ sub print_tag_counts {
           ? $seq_ref->{$individual}{unique}
           : $seq_ref->{$individual}{count};
         if ( defined $count ) {
-            printf "%6.2f ", $count;
+            printf '%6.2f ', $count;
         }
         else {
-            print "  -    ";
+            print '  -    ';
         }
     }
     print "\n";
@@ -396,13 +616,13 @@ sub print_tag_counts {
             if ( defined $seq_ref->{$individual}{qual} ) {
                 print "\t";
                 my @quals = split //, $seq_ref->{$individual}{qual};
-                map {
-                    my $qual_score = ord($_) - 64;
+                foreach my $qual (@quals) {
+                    my $qual_score = ord($qual) - 64;
 
-                    if    ( $qual_score < 20 ) { print "!"; }
-                    elsif ( $qual_score < 30 ) { print "?" }
-                    else                       { print " "; }
-                } @quals;
+                    if    ( $qual_score < 20 ) { print q{!}; }
+                    elsif ( $qual_score < 30 ) { print q{?}; }
+                    else                       { print q{ }; }
+                }
                 print " $individual\n";
             }
         }
@@ -410,8 +630,17 @@ sub print_tag_counts {
     return;
 }
 
+#############################################################################
+### Name:       PRINT SEG SNPS
+### Function:   Print SNPs for a particular tag
+### Parameters: tag_ref   - tag information to output
+###             ind_ref   - names of samples
+###             fragments - if set, output fragment counts, not reads
+### Returns:    nothing (outputs to STDOUT)
+#############################################################################
+
 sub print_seg_snps {
-    my ( $tag_ref, $ind_ref ) = @_;
+    my ( $tag_ref, $ind_ref, $fragments ) = @_;
 
     my $tag_length = length( $tag_ref->[0]->{sequence} );
 
@@ -419,7 +648,8 @@ sub print_seg_snps {
         my %pos_bases;
         foreach my $allele_ref ( @{$tag_ref} ) {
             my $allele_base = substr $allele_ref->{sequence}, $pos, 1;
-            foreach my $individual ( sort keys %{ $allele_ref->{individuals} } ) {
+            foreach my $individual ( sort keys %{ $allele_ref->{individuals} } )
+            {
                 my $count =
                     $fragments
                   ? $allele_ref->{individuals}{$individual}{unique}
@@ -433,16 +663,16 @@ sub print_seg_snps {
         if ( keys %pos_bases > 1 ) {
             foreach my $base ( sort keys %pos_bases ) {
                 print "\t";
-                print " " x $pos;
+                print q{ } x $pos;
                 print $base;
-                print " " x ( $tag_length - $pos );
-                print "   ";
+                print q{ } x ( $tag_length - $pos );
+                print q{   };
                 foreach my $individual ( @{$ind_ref} ) {
-                    if ( defined( $pos_bases{$base}{$individual} ) ) {
-                        printf "%6.2f ", $pos_bases{$base}{$individual};
+                    if ( defined $pos_bases{$base}{$individual} ) {
+                        printf '%6.2f ', $pos_bases{$base}{$individual};
                     }
                     else {
-                        print "  -    ";
+                        print '  -    ';
                     }
                 }
                 print "\n";
@@ -453,10 +683,18 @@ sub print_seg_snps {
     return;
 }
 
+#############################################################################
+### Name:       IS MIRROR
+### Function:   Checks if any two segregation patterns in one cluster
+###             are mirrors of each other
+### Parameters: seg_pattern - patterns to check
+### Returns:    nothing (outputs to STDOUT)
+#############################################################################
+
 sub is_mirror {
     my ($seg_pattern) = @_;
 
-    my @genotypes = split " ", $seg_pattern;
+    my @genotypes = split q{ }, $seg_pattern;
     foreach my $genotype_a (@genotypes) {
         foreach my $genotype_b (@genotypes) {
             next if ( $genotype_a eq $genotype_b );
@@ -472,12 +710,117 @@ sub is_mirror {
                     push @mirror_b_all, 1;
                 }
             }
-            my $mirror_b = join "", @mirror_b_all;
+            my $mirror_b = join q{}, @mirror_b_all;
 
             if ( $genotype_a eq $mirror_b ) {
-                print "M";
+                print 'M';
             }
         }
     }
     return;
 }
+
+__END__
+
+#############################################################################
+###
+### DOCUMENTATION
+###
+#############################################################################
+
+=head1 NAME
+
+RADmarkers - generates candidate markers from RAD tags across many individuals
+
+=head1 VERSION
+
+This documentation refers to RADtools version 0.1.
+
+=head1 SYNOPSIS
+
+=over 8
+
+=item RADmarkers [options]
+
+=back
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--help>
+
+Print a brief help message and exit
+
+=item B<--usage>
+
+Print concise usage and exit
+
+=item B<--man>
+
+Print the manual page and exit
+
+=item B<--version>
+
+Print version number and exit
+
+=item B<-e, --end_tagfiles>
+
+Suffix of filenames containing RAD tags (default '.tags')
+
+=item B<-v, --verbose>
+
+Output progress messages and summary statistics (default off)
+
+=item B<-s, --snpsout>
+
+Output SNPs for clusters with more than one tag (default off)
+
+=item B<-q, --qualsout>
+
+Output quality summaries for tags (default off; ? = Q below 30, ! = Q below 20)
+
+=item B<-f, --fragments>
+
+Output fragment counts instead of read counts (default off). A fragment is a unique single/paired end combination.
+
+=item B<-t, --tag_count_threshold>
+
+Tags with counts below this threshold are rejected (default 0; uses read counts by default, fragment counts if -f is set)
+
+=item B<-h, --hamming_threshold>
+
+Two tags with Hamming distance equal or above this threshold are separated into different clusters (default 0)
+
+=item B<-i, --include_singletons>
+
+Include tags present in only one individual (default off)
+
+=back
+
+=head1 DESCRIPTION
+
+B<RADmarkers> loads all tag files output by RADtags for all individuals and clusters together tags with similar sequences into candidate loci. The loci are then sorted by segregation pattern and output with counts against each individual. SNPs and qualities can also be output. 
+
+=head1 AUTHOR
+
+John Davey <john.davey@ed.ac.uk>
+
+=head1 LICENCE AND COPYRIGHT
+
+Copyright 2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+=cut

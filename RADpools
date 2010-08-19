@@ -510,20 +510,19 @@ RADpools - Take raw Illumina RAD reads and create read files for a set of pools
 
 =head1 VERSION
 
-This documentation refers to RADpools version 0.1.
+This documentation refers to RADtools version 0.1.
 
 =head1 SYNOPSIS
 
 =over 8
 
-=item RADpools -i file -s species_name [options]
+=item RADpools -in file -species species_name [options]
 
 =back
 
 =head1 OPTIONS
 
 =over 8
-
 
 =item B<--help>
 
