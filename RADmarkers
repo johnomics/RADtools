@@ -12,6 +12,7 @@
 # 03/08/10 Incorporated into RADtools
 # 18/08/10 Run through perlcritic, tidied up options, added POD,
 #          added main() for testing and refactored main into subroutines
+# 20/08/10 Added -species option to specify tags directory
 
 #############################################################################
 ###
@@ -43,6 +44,7 @@ sub main {
     my $man   = 0;
 
     my $end_tagfiles = '.tags';
+    my $species      = '.';
 
     my $verbose   = 0;
     my $snpsout   = 0;
@@ -61,9 +63,10 @@ sub main {
         'man'    => \$man,
 
         'end_tagfiles|e=s' => \$end_tagfiles,
+        'species|s=s'     => \$species,
 
         'verbose|v'   => \$verbose,
-        'snpsout|s'   => \$snpsout,
+        'snpsout|o'  => \$snpsout,
         'qualsout|q'  => \$qualsout,
         'fragments|f' => \$fragments,
 
@@ -88,13 +91,14 @@ sub main {
 ###
 #############################################################################
 
-    opendir my $tagdir, q{.};
+    opendir( my $tagdir, $species);
     my @tag_filenames = grep { /($end_tagfiles)$/ } readdir $tagdir;
     closedir $tagdir;
 
     generate_tag_clusters(
         {
             tag_filenames       => \@tag_filenames,
+            species             => $species,
             tag_clusters        => \%tag_clusters,
             tags                => \%tags,
             individuals         => \@individuals,
@@ -168,6 +172,7 @@ sub main {
 ### Name:       GENERATE TAG CLUSTERS
 ### Function:   Cluster tags across all individuals
 ### Parameters: tag_filenames       - files containing RAD tags from RADtags
+###             species             - pools folder to load tags from
 ###             tag_clusters        - hash of clusters containing tags
 ###             tags                - hash of tags alone for reference
 ###             individuals         - list of sample names
@@ -183,6 +188,7 @@ sub generate_tag_clusters {
     my ($arg_ref) = @_;
 
     my $file_ref            = $arg_ref->{tag_filenames};
+    my $species             = $arg_ref->{species};
     my $tag_clus_ref        = $arg_ref->{tag_clusters};
     my $tags_ref            = $arg_ref->{tags};
     my $ind_ref             = $arg_ref->{individuals};
@@ -191,14 +197,12 @@ sub generate_tag_clusters {
     my $fragments           = $arg_ref->{fragments};
     my $verbose             = $arg_ref->{verbose};
 
-    my $species = q{};
     my $new_cluster_id = 0;
 
     foreach my $tag_filename ( sort @{$file_ref} ) {
-        open my $tag_file, '<', $tag_filename
-          or die "Can't open $tag_filename: $OS_ERROR!\n";
+        open my $tag_file, '<', "$species/$tag_filename"
+          or die "Can't open $species/$tag_filename: $OS_ERROR!\n";
         my $individual = ( split /_/, $tag_filename )[1];
-        $species = ( split /_/, $tag_filename )[0];
         push @{$ind_ref}, $individual;
 
         my %cluster;
@@ -439,9 +443,9 @@ sub load_tag_into_cluster {
     $tags_ref->{$tag_seq}{ind}{$individual}{unique} = $tag_unique_count;
     $tags_ref->{$tag_seq}{ind}{$individual}{qual}   = $tag_qual;
 
-    $clus_ref->{$tag_seq}{$individual}{count}       = $tag_read_count;
-    $clus_ref->{$tag_seq}{$individual}{unique}      = $tag_unique_count;
-    $clus_ref->{$tag_seq}{$individual}{qual}        = $tag_qual;
+    $clus_ref->{$tag_seq}{$individual}{count}  = $tag_read_count;
+    $clus_ref->{$tag_seq}{$individual}{unique} = $tag_unique_count;
+    $clus_ref->{$tag_seq}{$individual}{qual}   = $tag_qual;
 
     return;
 }
@@ -768,11 +772,15 @@ Print version number and exit
 
 Suffix of filenames containing RAD tags (default '.tags')
 
+=item B<-s, --species>
+
+Name of directory containing tags files (ie prefix of pools filename if using RADtools conventions) (default .)
+
 =item B<-v, --verbose>
 
 Output progress messages and summary statistics (default off)
 
-=item B<-s, --snpsout>
+=item B<-o, --snpsout>
 
 Output SNPs for clusters with more than one tag (default off)
 

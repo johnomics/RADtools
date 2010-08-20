@@ -8,6 +8,7 @@
 # 03/08/10 Incorporated into RADtools
 # 18/08/10 Run through perlcritic, tidied up options, added POD,
 #          added main() for testing
+# 20/08/10 Multiplexing samples in parallel; write output to files
 
 #############################################################################
 ###
@@ -20,7 +21,7 @@ use warnings;
 use English qw( -no_match_vars );
 use Getopt::Long qw(:config bundling no_auto_abbrev auto_version );
 use Pod::Usage;
-
+use Parallel::ForkManager;
 use POSIX qw{ceil};
 
 # Would like to use Carp, but an outstanding bug causes cryptic errors
@@ -40,10 +41,12 @@ sub main {
     my $usage = 0;
     my $man   = 0;
 
-    my $in_filename       = q{};
+    my $file_extension    = '.reads';
+    my $species           = '.';
     my $expected_tags     = -1;
     my $quality_threshold = 20;
     my $read_threshold    = 4;
+    my $max_processes     = 1;
 
     my $options_okay = GetOptions(
 
@@ -51,25 +54,76 @@ sub main {
         'usage'  => \$usage,
         'man'    => \$man,
 
-        'input|i=s'             => \$in_filename,
+        'file_extension|f=s'    => \$file_extension,
+        'species|s=s'           => \$species,
         'expected_tags|e=i'     => \$expected_tags,
         'quality_threshold|q=i' => \$quality_threshold,
         'read_threshold|r=i'    => \$read_threshold,
+        'max_processes|m=i'     => \$max_processes,
     ) or pod2usage( -verbose => 0 );
 
     pod2usage( -verbose => 0 ) if $usage;
     pod2usage( -verbose => 1 ) if $help;
     pod2usage( -verbose => 2 ) if $man;
 
-    pod2usage( -verbose => 0 ) if ( $in_filename   eq q{} );
     pod2usage( -verbose => 0 ) if ( $expected_tags == -1 );
 
-    # This calculates how many bases required to uniquely ID
-    # this number of tags (reverse of 4^(expected_tags))
-    # with a couple of extra orders of magnitude added
-    # so that SNPs can be included in the same cluster
-    my $threshold_distance = ceil( (log $expected_tags) / (log 4)  );
-    my @bases = qw{A C G T};
+    opendir( my $readdir, $species );
+    my @read_filenames = grep { /($file_extension)$/ } readdir $readdir;
+    closedir $readdir;
+    
+    if (@read_filenames == 0) {die "No read files found. You may need to specify the read file directory using -s\n";}
+
+    my $pm = new Parallel::ForkManager(@read_filenames);
+    $pm->set_max_procs($max_processes);
+
+    foreach my $read_filename (@read_filenames) {
+        $pm->start and next;
+
+        $read_filename =~ s/$file_extension//;
+        cluster_one_sample(
+            {
+                sample_name       => $read_filename,
+                file_extension    => $file_extension,
+                species           => $species,
+                expected_tags     => $expected_tags,
+                quality_threshold => $quality_threshold,
+                read_threshold    => $read_threshold,
+            }
+        );
+        $pm->finish;
+    }
+    $pm->wait_all_children;
+
+    return;
+}
+
+#############################################################################
+###
+### SUBROUTINES
+###
+#############################################################################
+
+#############################################################################
+### Name:       CLUSTER ONE SAMPLE
+### Function:   Process reads from one sample into tags
+### Parameters: in_filename - file of reads to process
+###             expected_tags - estimate of tags to aim for
+###             quality_threshold - reject reads with qualities below this
+###             read_threshold - reject tags with read counts less than this
+### Returns:    nothing (outputs to file)
+#############################################################################
+
+sub cluster_one_sample {
+
+    my ($arg_ref) = @_;
+
+    my $sample_name       = $arg_ref->{sample_name};
+    my $file_extension    = $arg_ref->{file_extension};
+    my $species           = $arg_ref->{species};
+    my $expected_tags     = $arg_ref->{expected_tags};
+    my $quality_threshold = $arg_ref->{quality_threshold};
+    my $read_threshold    = $arg_ref->{read_threshold};
 
     my $first_unique;
     my $unique_hash;
@@ -77,14 +131,18 @@ sub main {
 
     my @cluster;
 
-#############################################################################
-###
-### MAIN LOOP
-###
-#############################################################################
+    # This calculates how many bases required to uniquely ID
+    # this number of tags (reverse of 4^(expected_tags))
+    # with a couple of extra orders of magnitude added
+    # so that SNPs can be included in the same cluster
+    my $threshold_distance = ceil( ( log $expected_tags ) / ( log 4 ) );
+    my @bases = qw{A C G T};
 
-    open my $in_file, '<', $in_filename
-      or die "Can't open $in_filename: $OS_ERROR!";
+    open my $in_file, '<', "$species/$sample_name$file_extension"
+      or die "Can't open $sample_name$file_extension: $OS_ERROR!";
+
+    open my $out_file, '>', "$species/$sample_name\.tags"
+      or die "Can't open $sample_name\.tags: $OS_ERROR!";
 
     my $first_read = get_read($in_file);
 
@@ -112,10 +170,8 @@ sub main {
           compare_uniques( $first_unique, $new_unique, $read_length );
 
         if ( $unique_distance > $threshold_distance ) {
-            find_cluster_variants(
-                \@cluster,          $read_length,
-                $quality_threshold, $read_threshold
-            );
+            find_cluster_variants( \@cluster, $read_length, $quality_threshold,
+                $read_threshold, $out_file );
             $first_unique = $new_unique;
             @cluster      = ($first_unique);
         }
@@ -130,17 +186,13 @@ sub main {
         # the last unique has been processed)
         last if ( !defined $first_read );
     }
+    close $out_file or die "Couldn't close $sample_name\.tags: $OS_ERROR!\n";
 
-    close $in_file or die "Couldn't close $in_filename\n";
+    close $in_file
+      or die "Couldn't close $sample_name$file_extension: $OS_ERROR!\n";
 
     return;
 }
-
-#############################################################################
-###
-### SUBROUTINES
-###
-#############################################################################
 
 #############################################################################
 ### Name:       COMPARE UNIQUES
@@ -234,7 +286,7 @@ sub get_unique {
         calculate_median_qualities( $unique->{q} );
         my $high_qual_bases = 0;
         map {
-            if ( $_ > 0 ) {$high_qual_bases++;}
+            if ( $_ > 0 ) { $high_qual_bases++; }
         } @{ $unique->{q} };
         if ( $high_qual_bases > ( $threshold_distance * 2 ) ) {
             $unique_ok = 1;
@@ -265,7 +317,9 @@ sub get_unique {
 #############################################################################
 
 sub find_cluster_variants {
-    my ( $cluster_ref, $read_length, $quality_threshold, $read_threshold ) = @_;
+    my ( $cluster_ref, $read_length, $quality_threshold, $read_threshold,
+        $out_file )
+      = @_;
 
     my @tag_bases;
     my $total_unique_count = 0;
@@ -348,6 +402,7 @@ sub find_cluster_variants {
     return if ( keys %alleles == 0 );
 
     my $passed = 0;
+
     # Summarise and output alleles
     foreach my $seq ( sort keys %alleles ) {
         my $count = 0;
@@ -410,22 +465,27 @@ sub find_cluster_variants {
 
         # Output tag with qualities, counts and high quality paired ends
         $passed = 1;
-        print "$seq " or die "Can't output sequence\n";
+        print $out_file "$seq " or die "Can't output sequence\n";
         foreach my $qual (@seq_quals) {
-            print chr ( $qual / $count ) + 64 or die "Can't output quality\n";
+            print $out_file chr( $qual / $count + 64 )
+              or die "Can't output quality\n";
         }
-        print " $count " or die "Can't output read count\n";
-        print scalar keys %pairs or die "Can't output fragment count\n";
-        print "\n" or die "Can't output newline\n";
+        print $out_file " $count " or die "Can't output read count\n";
+        print $out_file scalar keys %pairs
+          or die "Can't output fragment count\n";
+        print $out_file "\n" or die "Can't output newline\n";
         map {
             if ( $_ ne q{} )
             {
-                print "\t$_ " . scalar @{ $pairs{$_} } . "\n" or die "Can't output paired ends\n";
+                print $out_file "\t$_ " . scalar @{ $pairs{$_} } . "\n"
+                  or die "Can't output paired ends\n";
             }
           }
           sort keys %pairs;
     }
-    if ($passed) { print "\n" or die "Can't output end of tag record\n"; }
+    if ($passed) {
+        print $out_file "\n" or die "Can't output end of tag record\n";
+    }
     return;
 }
 
@@ -480,7 +540,7 @@ This documentation refers to RADtools version 0.1.
 
 =over 8
 
-=item RADtags -i file -e expected_tags [options]
+=item RADtags -e expected_tags [options]
 
 =back
 
@@ -504,13 +564,21 @@ Print the manual page and exit
 
 Print version number and exit
 
-=item B<-i, --in>
+=item B<-f, --file_extension>
 
-File containing single end Illumina RAD reads in FASTQ format (required)
+Suffix of filenames containing RAD reads (default '.reads'). To load a particular file, use -f filename.
+
+=item B<-s, --species>
+
+Name of directory containing tags files (ie prefix of pools filename if using RADtools conventions). Default is working directory (.).
 
 =item B<-e, --expected_tags>
 
 Estimate of number of tags expected in sample (required)
+
+=item B<-m, --max_processes>
+
+Maximum number of processes to run (default 1). As one process is required for each sample, increasing --max_processes is highly recommended if more cores are available.
 
 =back
 

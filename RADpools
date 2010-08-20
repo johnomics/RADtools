@@ -10,6 +10,7 @@
 # 03/08/10 Incorporated into RADtools
 # 05/08/10 Run through perlcritic, tidied up options, added POD,
 #          removed benchmarking, added main() for testing purposes
+# 20/08/10 Added sorting the read pools using Parallel::ForkManager
 
 #############################################################################
 ###
@@ -22,6 +23,8 @@ use warnings;
 use English qw( -no_match_vars );
 use Getopt::Long qw( :config bundling no_auto_abbrev auto_version );
 use Pod::Usage;
+use File::Copy;
+use Parallel::ForkManager;
 
 # Would like to use Carp, but an outstanding bug causes cryptic errors
 # when using caller(), so using die until this is fixed
@@ -45,6 +48,8 @@ sub main {
     my $read1_file = q{};
     my $read2_file = q{};
     my $species    = q{};
+    
+    my $max_processes = 1;
 
     my $res_site                = 'TGCAGG';    #SbfI
     my $mid_length              = 5;
@@ -64,6 +69,8 @@ sub main {
         'in|i=s'      => \$read1_file,
         'paired|p=s'  => \$read2_file,
         'species|s=s' => \$species,
+        
+        'max_processes|m=i' => \$max_processes,
 
         'enzyme|e=s'            => \$res_site,
         'mid-length|mid=i'      => \$mid_length,
@@ -117,10 +124,6 @@ sub main {
 
             my $pool_name = shift @pool_mid_list;
 
-         #        open $pool_handles{$pool_name}, '>',
-         #          "./$species/$species\_$pool_name\_reads.txt"
-         #          or die "Can't open output file for $pool_name: $OS_ERROR\n";
-
             # Load MIDs into array and set up hash of MIDs for pool lookup
 
             foreach my $mid (@pool_mid_list) {
@@ -173,7 +176,7 @@ sub main {
             $mid_pools{$mid} = $pool_string;
 
             open $pool_handles{$pool_string}, '>',
-              "./$species/$species\_$pool_string\_reads.txt"
+              "./$species/$species\_$pool_string\.reads"
               or die "Can't open output file for $pool_string: $OS_ERROR\n";
         }
     }
@@ -200,7 +203,7 @@ sub main {
 ###
 #############################################################################
 
-    if ($verbose) { print "Loading RAD tags:\n"; }
+    if ($verbose) { print "Loading RAD reads...\n"; }
 
     # Initialise sequence, quality and RAD variables
 
@@ -213,8 +216,6 @@ sub main {
     my $sequence           = q{};
     my $record_count_total = 0;
     my $record_count_valid = 0;
-
-    my %rads = ();
 
     # Open RAD sequence file
     open my $read1_in, '<', $read1_file
@@ -297,15 +298,7 @@ sub main {
         # Update progress meter
         $record_count_total++;
         if ( ($verbose) && ( $record_count_total % 100_000 == 0 ) ) {
-            print
-"OK: $record_count_valid; FASTQ: $non_fastq_count; RAD: $wrong_rad_format_count; Res: $wrong_ressite_count; MID: $wrong_mid_count; Short: $short_sequence_count\n";
-            update_progress(
-                {
-                    record_count => $record_count_total,
-                    dot          => 100_000,
-                    marker       => 1_000_000
-                }
-            );
+            printf "OK: %8d | FASTQ: %8d | RAD: %8d | Res: %8d | MID: %8d | Short: %8d\n", $record_count_valid, $non_fastq_count, $wrong_rad_format_count, $wrong_ressite_count, $wrong_mid_count, $short_sequence_count;
         }
 
         # Find any point where Q<20 and strip off sequence following this point
@@ -395,7 +388,6 @@ sub main {
                   " $read2_sequence $read2_quality";
             }
             print { $pool_handles{$pool} } "\n";
-            $rads{$pool}{$dna_sequence}++;
             $record_count_valid++;
         }
 
@@ -421,16 +413,45 @@ sub main {
         close $pool_handles{$pool} or die "Can't close pool files: $OS_ERROR\n";
     }
 
-    # Output records loaded and discarded
-    if ($verbose) {
+#    my @pids; # Array of pid's children, so can test each child for completion individually if wish.
+#    my @pool_ids = sort keys %pool_handles;
+#    for my $i (0..$#pool_ids) {
+#        $pids[$i]=fork();
+#        if (not defined $pids[$i]) {print "\nCan't create child process $i\n";}
+#        elsif ($pids[$i] == 0) {
+#            my $read_file = "./$species/$species\_$pool_ids[$i]\.reads";
+#            print "$read_file\n";
+#            system("sort -T ./$species --output=$read_file\.sort $read_file" );
+#            move("$read_file\.sort",$read_file);
+#            exit 0;
+#        }
+#        else { # parent process, do nothing
+#        }
+#    }
 
-        print "$record_count_valid records loaded, but discarded \n"
-          . "$non_fastq_count records not in FASTQ format, \n"
-          . "$wrong_rad_format_count records not in RAD format, \n"
-          . "$wrong_ressite_count records not matching restriction enzyme site, \n"
-          . "$wrong_mid_count records not matching any listed MIDs, and \n"
-          . "$short_sequence_count records with high-quality sequences less than $minimum_sequence_length long\n";
+    #    foreach my $pid (@pids) {
+    #        waitpid($pid,0);
+    #    }
+
+    if ($verbose) {print "Sorting pooled reads...\n";}
+
+    my @pool_ids = sort keys %pool_handles;
+    my $pm       = new Parallel::ForkManager(@pool_ids);
+    $pm->set_max_procs($max_processes);
+
+    foreach my $pool_id (@pool_ids) {
+        $pm->start and next;
+
+        my $read_file = "./$species/$species\_$pool_id\.reads";
+        print "Sorting $read_file...\n";
+        system("sort -T ./$species --output=$read_file\.sort $read_file");
+        move( "$read_file\.sort", $read_file );
+
+        $pm->finish;
     }
+
+    $pm->wait_all_children;
+
 
     print {$invalid_handle}
       "$record_count_valid records loaded, but discarded \n"
@@ -443,7 +464,18 @@ sub main {
 
     close $invalid_handle or die "Can't close $invalid_file: $OS_ERROR\n";
 
-    if ($verbose) { print "\nDone\n"; }
+    # Output records loaded and discarded
+    if ($verbose) {
+
+        print "$record_count_valid records loaded, but discarded \n"
+          . "$non_fastq_count records not in FASTQ format, \n"
+          . "$wrong_rad_format_count records not in RAD format, \n"
+          . "$wrong_ressite_count records not matching restriction enzyme site, \n"
+          . "$wrong_mid_count records not matching any listed MIDs, and \n"
+          . "$short_sequence_count records with high-quality sequences less than $minimum_sequence_length long\n"
+          . "Done\n";
+    }
+
 
     return;
 }
@@ -454,27 +486,6 @@ sub main {
 ###
 #############################################################################
 
-#############################################################################
-### Name:       UPDATE PROGRESS
-### Function:   prints a progress meter
-### Parameters: Record count - number of records processed so far
-### Returns:    Nothing
-#############################################################################
-
-sub update_progress {
-    my ($arg_ref) = @_;
-
-    my $record_count = $arg_ref->{record_count};
-    my $dot          = $arg_ref->{dot};
-    my $marker       = $arg_ref->{marker};
-
-    if ( $record_count % $dot == 0 ) { print '.'; }
-    if ( $record_count % $marker == 0 ) {
-        print "$record_count";
-        print "\n";
-    }
-    return;
-}
 
 #############################################################################
 ### Name:       GET TIMESTAMP
@@ -555,6 +566,10 @@ File containing paired end Illumina RAD reads in FASTQ format (optional)
 =item B<-s, --species>
 
 Name of species to be sequenced, matching name of pools file (required)
+
+=item B<-m, --max_processes>
+
+Maximum number of processes to use for sorting read pools after input files have been processed. Default 1; increasing --max_processes is highly recommended if more cores are available.
 
 =item B<-e, --enzyme>
 
