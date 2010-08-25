@@ -549,6 +549,7 @@ This documentation refers to RADtools version 0.1.
 =over 8
 
 =item RADtags -e expected_tags [options]
+
 =item RADtags --help
 
 =back
