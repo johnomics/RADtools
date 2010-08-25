@@ -11,6 +11,7 @@
 # 05/08/10 Run through perlcritic, tidied up options, added POD,
 #          removed benchmarking, added main() for testing purposes
 # 20/08/10 Added sorting the read pools using Parallel::ForkManager
+# 25/08/10 Catch absence of Parallel::ForkManager
 
 #############################################################################
 ###
@@ -18,13 +19,20 @@
 ###
 #############################################################################
 
+# Core pragmas and modules
 use strict;
 use warnings;
 use English qw( -no_match_vars );
 use Getopt::Long qw( :config bundling no_auto_abbrev auto_version );
 use Pod::Usage;
 use File::Copy;
-use Parallel::ForkManager;
+
+# Non-core modules
+eval {
+require Parallel::ForkManager;
+Parallel::ForkManager->import();
+};
+die "RADpools requires the CPAN module Parallel::ForkManager. Please install this package and add it to your Perl library path.\n" if $@;
 
 # Would like to use Carp, but an outstanding bug causes cryptic errors
 # when using caller(), so using die until this is fixed
@@ -61,7 +69,7 @@ sub main {
     # Load user options
     my $options_okay = GetOptions(
 
-        'help|?'    => \$help,
+        'help|h'    => \$help,
         'usage'     => \$usage,
         'man'       => \$man,
         'verbose|v' => \$verbose,
@@ -527,7 +535,8 @@ This documentation refers to RADtools version 0.1.
 
 =over 8
 
-=item RADpools -in file -species species_name [options]
+=item RADpools --in file --species species_name [options]
+=item RADpools --help
 
 =back
 
@@ -535,7 +544,7 @@ This documentation refers to RADtools version 0.1.
 
 =over 8
 
-=item B<--help>
+=item B<-h, --help>
 
 Print a brief help message and exit
 
