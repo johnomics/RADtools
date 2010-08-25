@@ -1,10 +1,12 @@
 RADTools
-August 3 2010
+Version 1.0
+August 25 2010
 John Davey john.davey@ed.ac.uk
 
-Tools for processing RAD Sequencing Illumina reads.
+Tools for processing RAD Sequencing Illumina reads. See Manual for more details.
 
-RADpools
-RADmarkers
-RADtags
-RADMIDs
+Installation: Requires Perl 5.10 and CPAN module Parallel::ForkManager. No compilation required.
+
+Wiki: https://www.wiki.ed.ac.uk/display/RADSequencing/
+Mailing list: rad-sequencing@jiscmail.ac.uk
+github: git://github.com/johnomics/RADtools.git
