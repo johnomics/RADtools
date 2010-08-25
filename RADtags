@@ -10,6 +10,7 @@
 #          added main() for testing
 # 20/08/10 Multiplexing samples in parallel; write output to files
 # 25/08/10 Catch absence of Parallel::ForkManager
+# 25/08/10 Version 1.0
 
 #############################################################################
 ###
@@ -36,7 +37,7 @@ die "RADtags requires the CPAN module Parallel::ForkManager. Please install this
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 0.1;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.0;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -53,7 +54,7 @@ sub main {
     my $species           = '.';
     my $expected_tags     = -1;
     my $quality_threshold = 20;
-    my $read_threshold    = 4;
+    my $read_threshold    = 2;
     my $max_processes     = 1;
 
     my $options_okay = GetOptions(
@@ -390,10 +391,10 @@ sub find_cluster_variants {
 
                 my $base1 = substr $unique1->{seq}, $pos, 1;
 
-                if ( $tag_bases[$pos]{$base1} > $quality_threshold ) {
+                if ( $tag_bases[$pos]{$base1} >= $quality_threshold ) {
                     my $base2 = substr $unique2->{seq}, $pos, 1;
                     next UNIQUE2
-                      if ( ( $tag_bases[$pos]{$base2} > $quality_threshold )
+                      if ( ( $tag_bases[$pos]{$base2} >= $quality_threshold )
                         && ( $base1 ne $base2 ) );
                 }
             }
@@ -542,7 +543,7 @@ RADtags - Identifies RAD tags in Illumina reads from RAD samples
 
 =head1 VERSION
 
-This documentation refers to RADtools version 0.1.
+This documentation refers to RADtools version 1.0.
 
 =head1 SYNOPSIS
 
@@ -589,6 +590,14 @@ Estimate of number of tags expected in sample (required)
 =item B<-m, --max_processes>
 
 Maximum number of processes to run (default 1). As one process is required for each sample, increasing --max_processes is highly recommended if more cores are available.
+
+=item B<-q, --quality_threshold>
+
+Only consider bases with qualities above this threshold when comparing unique sequences for similarity. Bases below this threshold will be ignored. Default 20.
+
+=item B<-r, --read_threshold>
+
+Reject any tags with counts lower than this threshold. Default 2, ie throw away all tags with just one read associated with them, which are very likely to be due to sequencing error.
 
 =back
 

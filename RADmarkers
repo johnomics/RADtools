@@ -13,6 +13,7 @@
 # 18/08/10 Run through perlcritic, tidied up options, added POD,
 #          added main() for testing and refactored main into subroutines
 # 20/08/10 Added -species option to specify tags directory
+# 25/08/10 Version 1.0
 
 #############################################################################
 ###
@@ -30,7 +31,7 @@ use Pod::Usage;
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 0.1;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.0;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -43,7 +44,7 @@ sub main {
     my $usage = 0;
     my $man   = 0;
 
-    my $end_tagfiles = '.tags';
+    my $end_tagfiles = '\.tags';
     my $species      = '.';
 
     my $verbose   = 0;
@@ -71,7 +72,7 @@ sub main {
         'fragments|f' => \$fragments,
 
         'tag_count_threshold|t=i' => \$tag_count_threshold,
-        'hamming_threshold|h=i'   => \$hamming_threshold,
+        'mismatches|h=i'   => \$hamming_threshold,
 
         'include_singletons|i' => \$include_singletons,
 
@@ -94,6 +95,8 @@ sub main {
     opendir( my $tagdir, $species);
     my @tag_filenames = grep { /($end_tagfiles)$/ } readdir $tagdir;
     closedir $tagdir;
+
+    if (@tag_filenames == 0) {die "No tag files found. You may need to specify the tag file directory using -s, or specify the correct tag file extension using -e.\n";}
 
     generate_tag_clusters(
         {
@@ -738,13 +741,14 @@ RADmarkers - generates candidate markers from RAD tags across many individuals
 
 =head1 VERSION
 
-This documentation refers to RADtools version 0.1.
+This documentation refers to RADtools version 1.0.
 
 =head1 SYNOPSIS
 
 =over 8
 
 =item RADmarkers [options]
+
 =item RADmarkers --help
 
 =back
@@ -797,9 +801,9 @@ Output fragment counts instead of read counts (default off). A fragment is a uni
 
 Tags with counts below this threshold are rejected (default 0; uses read counts by default, fragment counts if -f is set)
 
-=item B<-h, --hamming_threshold>
+=item B<-h, --mismatches>
 
-Two tags with Hamming distance equal or above this threshold are separated into different clusters (default 0)
+Two tags with this number of mismatches or less will be clustered together  (default 0, ie only associate clusters from different pools where they contain at least one tag each with exactly the same sequence)
 
 =item B<-i, --include_singletons>
 

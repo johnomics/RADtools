@@ -12,6 +12,9 @@
 #          removed benchmarking, added main() for testing purposes
 # 20/08/10 Added sorting the read pools using Parallel::ForkManager
 # 25/08/10 Catch absence of Parallel::ForkManager
+#          Rework trim and quality options, remove mid_length and
+#              minimum_sequence_length options, rename zombies to fuzzy_MIDs
+# 25/08/10 Version 1.0
 
 #############################################################################
 ###
@@ -29,16 +32,18 @@ use File::Copy;
 
 # Non-core modules
 eval {
-require Parallel::ForkManager;
-Parallel::ForkManager->import();
+    require Parallel::ForkManager;
+    Parallel::ForkManager->import();
 };
-die "RADpools requires the CPAN module Parallel::ForkManager. Please install this package and add it to your Perl library path.\n" if $@;
+die
+"RADpools requires the CPAN module Parallel::ForkManager. Please install this package and add it to your Perl library path.\n"
+  if $@;
 
 # Would like to use Carp, but an outstanding bug causes cryptic errors
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 0.1;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.0;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -56,15 +61,13 @@ sub main {
     my $read1_file = q{};
     my $read2_file = q{};
     my $species    = q{};
-    
+
     my $max_processes = 1;
 
-    my $res_site                = 'TGCAGG';    #SbfI
-    my $mid_length              = 5;
-    my $minimum_sequence_length = 0;
-    my $quality_threshold       = -5;
-    my $trim                    = 0;
-    my $zombies_accepted        = 0;
+    my $res_site          = 'TGCAGG';    #SbfI
+    my $quality_threshold = -5;
+    my $trim              = 0;
+    my $fuzzy_MIDs  = 0;
 
     # Load user options
     my $options_okay = GetOptions(
@@ -77,15 +80,13 @@ sub main {
         'in|i=s'      => \$read1_file,
         'paired|p=s'  => \$read2_file,
         'species|s=s' => \$species,
-        
+
         'max_processes|m=i' => \$max_processes,
 
-        'enzyme|e=s'            => \$res_site,
-        'mid-length|mid=i'      => \$mid_length,
-        'min-read-length|min=i' => \$minimum_sequence_length,
-        'quality|q=i'           => \$quality_threshold,
-        'trim|t'                => \$trim,
-        'zombies-accepted|z'    => \$zombies_accepted,
+        'enzyme|e=s'         => \$res_site,
+        'quality|q=i'        => \$quality_threshold,
+        'trim|t=i'           => \$trim,
+        'fuzzy_MIDs|f' => \$fuzzy_MIDs,
 
     ) or pod2usage( -verbose => 0 );
 
@@ -97,6 +98,9 @@ sub main {
     pod2usage( -verbose => 0 ) if ( $read1_file eq q{} );
     pod2usage( -verbose => 0 ) if ( $species    eq q{} );
 
+    # Sugar: strip .pools from species argument if it has been added
+    $species =~ s/\.pools$//;
+
 #############################################################################
 ###
 ### LOAD POOLS AND MIDS
@@ -104,9 +108,9 @@ sub main {
 #############################################################################
 
     my $res_site_length = length $res_site;
-
-    my %mid_pools    = ();
-    my %pool_handles = ();
+    my $mid_length      = 0;
+    my %mid_pools       = ();
+    my %pool_handles    = ();
     if ($verbose) { print "Loading pools and MIDs...\n"; }
 
     if ( $species ne q{} ) {
@@ -135,7 +139,8 @@ sub main {
             # Load MIDs into array and set up hash of MIDs for pool lookup
 
             foreach my $mid (@pool_mid_list) {
-                if ( !$zombies_accepted ) {
+                $mid_length = length $mid;
+                if ( !$fuzzy_MIDs ) {
                     push @{ $mid_pools{$mid} }, $pool_name;
                 }
                 else {
@@ -167,7 +172,7 @@ sub main {
         # Get unique elements of list
         @pool_list = grep { ( $_ ne $seen ) && ( ($seen) = $_ ) } @pool_list;
 
-        if ( ( !$zombies_accepted ) && ( @pool_list > 1 ) ) {
+        if ( ( !$fuzzy_MIDs ) && ( @pool_list > 1 ) ) {
             delete $mid_pools{$mid};
         }
         else {
@@ -247,7 +252,7 @@ sub main {
       or die "Can't open $invalid_file: $OS_ERROR";
 
     print {$invalid_handle}
-"Input files: $read1_file, $read2_file; Species: $species, Enzyme site: $res_site; Minimum length: $minimum_sequence_length; Quality threshold: $quality_threshold\n"
+"Input files: $read1_file, $read2_file; Species: $species, Enzyme site: $res_site; Trim length: $trim; Quality threshold: $quality_threshold\n"
       or die "Can't write to $invalid_file: $OS_ERROR\n";
 
     # Load RAD sequences into hash of pools with counts for identical sequences
@@ -303,10 +308,18 @@ sub main {
             next LOAD_ONE_SEQUENCE;
         }
 
+        # Set trim to length of RAD sequence if not previously set
+        if ( $trim == 0 ) {
+            $trim = ( length $fastq_sequence ) - $mid_length - $res_site_length;
+        }
+
         # Update progress meter
         $record_count_total++;
         if ( ($verbose) && ( $record_count_total % 100_000 == 0 ) ) {
-            printf "OK: %8d | FASTQ: %8d | RAD: %8d | Res: %8d | MID: %8d | Short: %8d\n", $record_count_valid, $non_fastq_count, $wrong_rad_format_count, $wrong_ressite_count, $wrong_mid_count, $short_sequence_count;
+            printf
+"OK: %8d | FASTQ: %8d | RAD: %8d | Res: %8d | MID: %8d | Short: %8d\n",
+              $record_count_valid,  $non_fastq_count, $wrong_rad_format_count,
+              $wrong_ressite_count, $wrong_mid_count, $short_sequence_count;
         }
 
         # Find any point where Q<20 and strip off sequence following this point
@@ -375,7 +388,7 @@ sub main {
         my $pool = $mid_pools{$mid};
 
         # Increment the number of times this sequence has occurred
-        if ( length($dna_sequence) >= $minimum_sequence_length ) {
+        if ( length($dna_sequence) >= $trim ) {
 
             # Remove MID and res site bases from read 1 quality string
             if ( $quality_tail =~
@@ -383,12 +396,9 @@ sub main {
             {
                 $quality_tail = $3;
             }
-            if ($trim) {
-                $dna_sequence = substr $dna_sequence, 0,
-                  $minimum_sequence_length;
-                $quality_tail = substr $quality_tail, 0,
-                  $minimum_sequence_length;
-            }
+            $dna_sequence = substr $dna_sequence, 0, $trim;
+            $quality_tail = substr $quality_tail, 0, $trim;
+
             print { $pool_handles{$pool} } "$dna_sequence $quality_tail"
               or die "Can't write to pools file: $OS_ERROR\n";
             if ( $read2_file ne q{} ) {
@@ -401,8 +411,8 @@ sub main {
 
         # Otherwise, sequence is too short; throw it away
         else {
-            print {$invalid_handle} 'Sequence shorter than '
-              . $minimum_sequence_length
+            print {$invalid_handle} 'Sequence shorter than ' 
+              . $trim
               . ' base pairs                : '
               . "$fastq_sequence $fastq_quality $dna_sequence\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
@@ -421,27 +431,7 @@ sub main {
         close $pool_handles{$pool} or die "Can't close pool files: $OS_ERROR\n";
     }
 
-#    my @pids; # Array of pid's children, so can test each child for completion individually if wish.
-#    my @pool_ids = sort keys %pool_handles;
-#    for my $i (0..$#pool_ids) {
-#        $pids[$i]=fork();
-#        if (not defined $pids[$i]) {print "\nCan't create child process $i\n";}
-#        elsif ($pids[$i] == 0) {
-#            my $read_file = "./$species/$species\_$pool_ids[$i]\.reads";
-#            print "$read_file\n";
-#            system("sort -T ./$species --output=$read_file\.sort $read_file" );
-#            move("$read_file\.sort",$read_file);
-#            exit 0;
-#        }
-#        else { # parent process, do nothing
-#        }
-#    }
-
-    #    foreach my $pid (@pids) {
-    #        waitpid($pid,0);
-    #    }
-
-    if ($verbose) {print "Sorting pooled reads...\n";}
+    if ($verbose) { print "Sorting pooled reads...\n"; }
 
     my @pool_ids = sort keys %pool_handles;
     my $pm       = new Parallel::ForkManager(@pool_ids);
@@ -460,14 +450,13 @@ sub main {
 
     $pm->wait_all_children;
 
-
     print {$invalid_handle}
       "$record_count_valid records loaded, but discarded \n"
       . "$non_fastq_count records not in FASTQ format, \n"
       . "$wrong_rad_format_count records not in RAD format, \n"
       . "$wrong_ressite_count records not matching restriction enzyme site, \n"
       . "$wrong_mid_count records not matching any listed MIDs, and \n"
-      . "$short_sequence_count records with high-quality sequences less than $minimum_sequence_length long\n"
+      . "$short_sequence_count records with high-quality sequences less than $trim bp long\n"
       or die "Can't write to $invalid_file: $OS_ERROR\n";
 
     close $invalid_handle or die "Can't close $invalid_file: $OS_ERROR\n";
@@ -480,10 +469,9 @@ sub main {
           . "$wrong_rad_format_count records not in RAD format, \n"
           . "$wrong_ressite_count records not matching restriction enzyme site, \n"
           . "$wrong_mid_count records not matching any listed MIDs, and \n"
-          . "$short_sequence_count records with high-quality sequences less than $minimum_sequence_length long\n"
+          . "$short_sequence_count records with high-quality sequences less than $trim long\n"
           . "Done\n";
     }
-
 
     return;
 }
@@ -493,7 +481,6 @@ sub main {
 ### SUBROUTINES
 ###
 #############################################################################
-
 
 #############################################################################
 ### Name:       GET TIMESTAMP
@@ -529,7 +516,7 @@ RADpools - Take raw Illumina RAD reads and create read files for a set of pools
 
 =head1 VERSION
 
-This documentation refers to RADtools version 0.1.
+This documentation refers to RADtools version 1.0.
 
 =head1 SYNOPSIS
 
@@ -585,25 +572,17 @@ Maximum number of processes to use for sorting read pools after input files have
 
 Sequence of cut site for used restriction enzyme (default TGCAGG, SbfI)
 
-=item B<-mid, --mid-length>
-
-Length of MID sequences (default 5)
-
-=item B<-min, --min-read-length>
-
-Minimum acceptable length of high quality reads (default 0, ie all reads accepted)
-
 =item B<-q, --quality>
 
 Minimum acceptable quality score (default -5, ie all bases accepted)
 
 =item B<-t, --trim>
 
-Trim all reads to minimum sequence length (set by B<--min-read-length>)
+Trim all reads to this length (default max length of read, ie no trimming)
 
-=item B<-z, --zombies-accepted>
+=item B<-f, --fuzzy_MIDs>
 
-If a read cannot be unambiguously assigned to a MID, create a new MID for the intermediate sequence (default off)
+If a MID contains an error, search for the closest MID sequence. If more than one MID found, create a new MID for the intermediate sequence (default off)
 
 =back
 

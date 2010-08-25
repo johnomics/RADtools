@@ -1,76 +1,166 @@
 #!/usr/bin/env perl
 
-# Copyright 2009,2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
-
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-#############################################################################
-
 # RADMIDs
 # Generate MIDs for use in RAD adapters
 
 # History:
 # 18/12/09 First public version
 # 03/08/10 Incorporated into RADtools
+# 25/08/10 Refactored and added POD
+# 25/08/10 Version 1.0
+
+#############################################################################
+###
+### PREAMBLE
+###
+#############################################################################
 
 use strict;
 use warnings;
-use Carp;
-use English;
-use Data::Dumper;
-use Getopt::Long;
+use English qw(-no_match_vars);
+use Getopt::Long qw(:config bundling no_auto_abbrev auto_version);
+use Pod::Usage;
 
-my @bases = ( 'A', 'G', 'C', 'T' );
+local $main::VERSION    = 1.0;    # Used by Getopt::Long to provide --version
+local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
-# Get options
+main(@ARGV) unless caller;        # So test suite can call script
 
-my $outfile    = 'mids.out';
-my $length     = 5;
-my $difference = 3;
-my $verbose    = 0;
-my $help       = 0;
+sub main {
 
-my $options_okay = GetOptions(
-    'out=s'        => \$outfile,
-    'length=i'     => \$length,
-    'difference=i' => \$difference,
-    'verbose'      => \$verbose,
-    'help'         => \$help,
-);
+    # Set up default options
 
-die
-"\nUsage: perl MID_generator.pl -o output_file -l mid_length -d basepairs_different -v (verbose) -h (help)\n"
-  if !$options_okay
-      or $help;
+    my $help  = 0;
+    my $usage = 0;
+    my $man   = 0;
 
-die "\nNumber of base pairs difference is greater than length of MID!\n"
-  if ( $difference > $length );
+    my $outfile    = 'mids.out';
+    my $length     = 5;
+    my $difference = 3;
 
-###########
-# Generate all MIDs of specified length
+    my $verbose = 0;
 
-# All MIDs contains all permutations of strings
-# of length $length containing @bases
-if ($verbose) { print "Permuting... "; }
-my @all_mids = @{ permute( $length, \@bases ) };
+    my $options_okay = GetOptions(
+        'help|h' => \$help,
+        'usage'  => \$usage,
+        'man'    => \$man,
 
-# Total number of MIDs is stored for printout later
-my $all_mids_num = scalar @all_mids;
+        'out|o=s'        => \$outfile,
+        'length|l=i'     => \$length,
+        'difference|d=i' => \$difference,
+        'verbose|v'      => \$verbose,
+    ) or pod2usage( -verbose => 0 );
+
+    pod2usage( -verbose => 0 ) if $usage;
+    pod2usage( -verbose => 1 ) if $help;
+    pod2usage( -verbose => 2 ) if $man;
+
+    die "\nNumber of base pairs difference is greater than length of MID!\n"
+      if ( $difference > $length );
+
+#############################################################################
+###
+### MAIN LOOP
+###
+#############################################################################
+
+    my @bases = ( 'A', 'G', 'C', 'T' );
+
+    ###########
+    # Generate all MIDs of specified length
+
+    print "Generating all MIDs of length $length...";
+
+    # All MIDs contains all permutations of strings
+    # of length $length containing @bases
+    if ($verbose) { print "Permuting... "; }
+    my @all_mids = @{ permute( $length, \@bases, $verbose ) };
+
+    # Total number of MIDs is stored for printout later
+    my $all_mids_num = scalar @all_mids;
+
+    ###########
+    # Check through MIDs to remove those that differ at only 1 base
+
+    if ($verbose) { print "\nChecking... "; }
+
+# Script hacks elements out of @all_mids as it goes, so use iterators rather than foreach
+    my $check_mid_num = 0;
+    my $diff_mid_num  = 0;
+
+    # Count number of bases which are different in two sequences
+    my $diff_base_count = 0;
+
+    # Arrays for the characters in each sequence
+    my @check_mid = ();
+    my @diff_mid  = ();
+
+# While there are still MIDs to check in all_mids (and at least one MID more to check against)
+    while ( $check_mid_num < $#all_mids ) {
+        if ($verbose) {
+            print "\n$all_mids[$check_mid_num] - Discarding: ";
+        }
+
+        # split the MID into characters so it can be compared
+        @check_mid = split( //, $all_mids[$check_mid_num] );
+
+        # Start by comparing the MID following $check_mid
+        $diff_mid_num = $check_mid_num + 1;
+
+        # While there are still MIDs uncompared
+        while ( $diff_mid_num <= $#all_mids ) {
+
+            # Reset similarity counter - no bases are different
+            $diff_base_count = 0;
+
+            # Split up the comparison MID like check_mid
+            @diff_mid = split( //, $all_mids[$diff_mid_num] );
+
+ # For each base in the MIDs, if they are the same, increment similarity counter
+            for ( my $i = 0 ; $i < $length ; $i++ ) {
+                if ( $check_mid[$i] ne $diff_mid[$i] ) {
+                    $diff_base_count++;
+                    if ( $diff_base_count > ( $difference - 1 ) ) {
+                        $i = $length;
+                    }
+                }
+            }
+
+# If the MIDs are not sufficiently different, remove the MID from the list
+# No need to increment diff_mid_num if MID has been removed; it already addresses the following MID
+            if ( $diff_base_count < $difference ) {
+                if ($verbose) { print $all_mids[$diff_mid_num] . " "; }
+                splice( @all_mids, $diff_mid_num, 1 );
+            }
+            else {
+
+                # If MID is sufficiently different, keep it and look at next MID
+                $diff_mid_num++;
+            }
+
+        }
+        $check_mid_num++;
+    }
+
+    ###########
+    # Output
+    my $final_mids_num = scalar @all_mids;
+
+    print "\nWriting to $outfile\n";
+
+    open my $OUT, '>', $outfile
+      or die "Can't open output file $outfile: $OS_ERROR";
+
+    foreach my $mid (@all_mids) {
+        print {$OUT} "$mid\n";
+    }
+    print
+"Of $all_mids_num MIDs of length $length, $final_mids_num differ by at least $difference nucleotides.\n";
+}
 
 # PERMUTE: Recursively generates all permutations of MIDs of length $length containing @bases
 sub permute {
-    my ( $length, $bases ) = @_;
+    my ( $length, $bases_ref, $verbose ) = @_;
 
     if ($verbose) { print "L$length:"; }
 
@@ -81,10 +171,10 @@ sub permute {
     if ( $length > 1 ) {
 
         # generate all permutations for sequences one nt shorter than $length
-        my $short_codes = permute( $length - 1, $bases );
+        my $short_codes = permute( $length - 1, $bases_ref );
 
         # tack on each base to each of the short_codes
-        foreach my $base ( @{$bases} ) {
+        foreach my $base ( @{$bases_ref} ) {
             foreach my $short_code ( @{$short_codes} ) {
                 push @long_codes, $base . $short_code;
                 if ($verbose) { print "."; }
@@ -94,7 +184,7 @@ sub permute {
     else {
 
         # when $length=1, just return the bases as seed sequences
-        @long_codes = @bases;
+        @long_codes = @{$bases_ref};
     }
 
     # return all permutations for this length
@@ -102,78 +192,90 @@ sub permute {
     return \@long_codes;
 }
 
-###########
-# Check through MIDs to remove those that differ at only 1 base
+__END__
 
-if ($verbose) { print "\nChecking... "; }
+#############################################################################
+###
+### DOCUMENTATION
+###
+#############################################################################
 
-# Script hacks elements out of @all_mids as it goes, so use iterators rather than foreach
-my $check_mid_num = 0;
-my $diff_mid_num  = 0;
+=head1 NAME
 
-# Count number of bases which are different in two sequences
-my $diff_base_count = 0;
+RADMIDs - generate MIDs for RAD adapters
 
-# Arrays for the characters in each sequence
-my @check_mid = ();
-my @diff_mid  = ();
+=head1 VERSION
 
-# While there are still MIDs to check in all_mids (and at least one MID more to check against)
-while ( $check_mid_num < $#all_mids ) {
-    if ($verbose) {
-        print "\n$all_mids[$check_mid_num] - Discarding: ";
-    }
+This documentation refers to RADtools version 1.0.
 
-    # split the MID into characters so it can be compared
-    @check_mid = split( //, $all_mids[$check_mid_num] );
+=head1 SYNOPSIS
 
-    # Start by comparing the MID following $check_mid
-    $diff_mid_num = $check_mid_num + 1;
+=over 8
 
-    # While there are still MIDs uncompared
-    while ( $diff_mid_num <= $#all_mids ) {
+=item RADMIDs [options]
 
-        # Reset similarity counter - no bases are different
-        $diff_base_count = 0;
+=item RADMIDs --help
 
-        # Split up the comparison MID like check_mid
-        @diff_mid = split( //, $all_mids[$diff_mid_num] );
+=back
 
-# For each base in the MIDs, if they are the same, increment similarity counter
-        for ( my $i = 0 ; $i < $length ; $i++ ) {
-            if ( $check_mid[$i] ne $diff_mid[$i] ) {
-                $diff_base_count++;
-                if ( $diff_base_count > ( $difference - 1 ) ) { $i = $length; }
-            }
-        }
+=head1 OPTIONS
 
-# If the MIDs are not sufficiently different, remove the MID from the list
-# No need to increment diff_mid_num if MID has been removed; it already addresses the following MID
-        if ( $diff_base_count < $difference ) {
-            if ($verbose) { print $all_mids[$diff_mid_num] . " "; }
-            splice( @all_mids, $diff_mid_num, 1 );
-        }
-        else {
+=over 8
 
-        # If MID is sufficiently different, keep it and look at next MID
-            $diff_mid_num++;
-        }
+=item B<-h, --help>
 
-    }
-    $check_mid_num++;
-}
+Print a brief help message and exit
 
-###########
-# Output
-my $final_mids_num = scalar @all_mids;
+=item B<--usage>
 
-print "\nWriting to $outfile\n";
+Print concise usage and exit
 
-open my $OUT, '>', $outfile
-  or croak "Can't open output file $outfile: $OS_ERROR";
+=item B<--man>
 
-foreach my $mid (@all_mids) {
-    print {$OUT} "$mid\n";
-}
-print
-"Of $all_mids_num MIDs of length $length, $final_mids_num differ by at least $difference nucleotides.\n";
+Print the manual page and exit
+
+=item B<--version>
+
+Print version number and exit
+
+=item B<-o, --outfile>
+
+File to write MIDs to (default mids.out)
+
+=item B<-l, --length>
+
+Length of MIDs to generate (default 5)
+
+=item B<-d, --difference>
+
+Number of differences between any pair of MIDs in the final set (default 3)
+
+=back
+
+=head1 DESCRIPTION
+
+B<RADMIDs> generates MIDs for RAD adapters.
+
+=head1 AUTHOR
+
+John Davey <john.davey@ed.ac.uk>
+
+=head1 LICENCE AND COPYRIGHT
+
+Copyright 2009,2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+=cut
+
