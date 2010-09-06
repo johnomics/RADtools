@@ -14,6 +14,7 @@
 #          added main() for testing and refactored main into subroutines
 # 20/08/10 Added -species option to specify tags directory
 # 25/08/10 Version 1.0
+# 06/09/10 Fixed names of individuals (was leaving file extension on)
 
 #############################################################################
 ###
@@ -72,7 +73,7 @@ sub main {
         'fragments|f' => \$fragments,
 
         'tag_count_threshold|t=i' => \$tag_count_threshold,
-        'mismatches|h=i'   => \$hamming_threshold,
+        'mismatches|m=i'   => \$hamming_threshold,
 
         'include_singletons|i' => \$include_singletons,
 
@@ -101,6 +102,7 @@ sub main {
     generate_tag_clusters(
         {
             tag_filenames       => \@tag_filenames,
+            end_tagfiles        => $end_tagfiles,
             species             => $species,
             tag_clusters        => \%tag_clusters,
             tags                => \%tags,
@@ -175,6 +177,7 @@ sub main {
 ### Name:       GENERATE TAG CLUSTERS
 ### Function:   Cluster tags across all individuals
 ### Parameters: tag_filenames       - files containing RAD tags from RADtags
+###             end_tagfiles        - for removing filename extensions
 ###             species             - pools folder to load tags from
 ###             tag_clusters        - hash of clusters containing tags
 ###             tags                - hash of tags alone for reference
@@ -191,6 +194,7 @@ sub generate_tag_clusters {
     my ($arg_ref) = @_;
 
     my $file_ref            = $arg_ref->{tag_filenames};
+    my $end_tagfiles        = $arg_ref->{end_tagfiles};
     my $species             = $arg_ref->{species};
     my $tag_clus_ref        = $arg_ref->{tag_clusters};
     my $tags_ref            = $arg_ref->{tags};
@@ -205,6 +209,7 @@ sub generate_tag_clusters {
     foreach my $tag_filename ( sort @{$file_ref} ) {
         open my $tag_file, '<', "$species/$tag_filename"
           or die "Can't open $species/$tag_filename: $OS_ERROR!\n";
+        $tag_filename =~ s/$end_tagfiles//;
         my $individual = ( split /_/, $tag_filename )[1];
         push @{$ind_ref}, $individual;
 
@@ -801,7 +806,7 @@ Output fragment counts instead of read counts (default off). A fragment is a uni
 
 Tags with counts below this threshold are rejected (default 0; uses read counts by default, fragment counts if -f is set)
 
-=item B<-h, --mismatches>
+=item B<-m, --mismatches>
 
 Two tags with this number of mismatches or less will be clustered together  (default 0, ie only associate clusters from different pools where they contain at least one tag each with exactly the same sequence)
 
