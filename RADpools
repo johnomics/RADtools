@@ -15,6 +15,7 @@
 #          Rework trim and quality options, remove mid_length and
 #              minimum_sequence_length options, rename zombies to fuzzy_MIDs
 # 25/08/10 Version 1.0
+# 08/09/10 1.0.1 Minor bug fixes
 
 #############################################################################
 ###
@@ -29,6 +30,7 @@ use English qw( -no_match_vars );
 use Getopt::Long qw( :config bundling no_auto_abbrev auto_version );
 use Pod::Usage;
 use File::Copy;
+use Data::Dumper;
 
 # Non-core modules
 eval {
@@ -434,7 +436,7 @@ sub main {
     if ($verbose) { print "Sorting pooled reads...\n"; }
 
     my @pool_ids = sort keys %pool_handles;
-    my $pm       = new Parallel::ForkManager(@pool_ids);
+    my $pm       = new Parallel::ForkManager(scalar(@pool_ids));
     $pm->set_max_procs($max_processes);
 
     foreach my $pool_id (@pool_ids) {

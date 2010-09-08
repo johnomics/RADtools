@@ -11,6 +11,7 @@
 # 20/08/10 Multiplexing samples in parallel; write output to files
 # 25/08/10 Catch absence of Parallel::ForkManager
 # 25/08/10 Version 1.0
+# 08/09/10 1.0.1 Minor bug fixes
 
 #############################################################################
 ###
@@ -83,7 +84,7 @@ sub main {
     
     if (@read_filenames == 0) {die "No read files found. You may need to specify the read file directory using -s\n";}
 
-    my $pm = new Parallel::ForkManager(@read_filenames);
+    my $pm = new Parallel::ForkManager(scalar(@read_filenames));
     $pm->set_max_procs($max_processes);
 
     foreach my $read_filename (@read_filenames) {
