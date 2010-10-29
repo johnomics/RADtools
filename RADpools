@@ -16,6 +16,8 @@
 #              minimum_sequence_length options, rename zombies to fuzzy_MIDs
 # 25/08/10 Version 1.0
 # 08/09/10 1.0.1 Minor bug fixes
+# 29/10/10 1.0.2 Accept at most one N in restriction enzyme, MID;
+#                Don't use species name in output filename
 
 #############################################################################
 ###
@@ -45,7 +47,7 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.0.1;  # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.0.2;  # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -147,7 +149,7 @@ sub main {
                 }
                 else {
                     for my $i ( 1 .. $mid_length ) {
-                        for my $base (qw{A C G T}) {
+                        for my $base (qw{A C G T N}) {
                             my $fuzzycode  = $mid;
                             my $prebase_i  = $i - 1;
                             my $postbase_i = $mid_length - $i;
@@ -191,7 +193,7 @@ sub main {
             $mid_pools{$mid} = $pool_string;
 
             open $pool_handles{$pool_string}, '>',
-              "./$species/$species\_$pool_string\.reads"
+              "./$species/$pool_string\.reads"
               or die "Can't open output file for $pool_string: $OS_ERROR\n";
         }
     }
@@ -200,7 +202,7 @@ sub main {
 
     my %fuzzy_res_sites = ();
     for my $i ( 1 .. $res_site_length ) {
-        for my $base (qw{A C G T}) {
+        for my $base (qw{A C G T N}) {
             my $fuzzyseq   = $res_site;
             my $prebase_i  = $i - 1;
             my $postbase_i = $res_site_length - $i;
@@ -211,6 +213,7 @@ sub main {
             $fuzzy_res_sites{$fuzzyseq} = $res_site;
         }
     }
+
 
 #############################################################################
 ###
@@ -240,11 +243,6 @@ sub main {
     if ( $read2_file ne q{} ) {
         open $read2_in, '<', $read2_file
           or die "Couldn't open '$read2_file': $OS_ERROR";
-    }
-
-    # Create a directory for the species if it doesn't already exist
-    if ( !( -d "./$species" ) ) {
-        mkdir "./$species" or die "Can't make ./$species: $OS_ERROR";
     }
 
     # Output invalid/unclustered sequences
@@ -373,7 +371,6 @@ sub main {
             $wrong_ressite_count++;
             next LOAD_ONE_SEQUENCE;
         }
-
         # Find pool for this MID; if no pool, make pool for this MID alone
         if ( !( exists $mid_pools{$mid} ) ) {
 
@@ -421,7 +418,6 @@ sub main {
             $short_sequence_count++;
 
         }
-
     }
     close $read1_in or die "Can't close $read1_file: $OS_ERROR\n";
 
@@ -442,7 +438,7 @@ sub main {
     foreach my $pool_id (@pool_ids) {
         $pm->start and next;
 
-        my $read_file = "./$species/$species\_$pool_id\.reads";
+        my $read_file = "./$species/$pool_id\.reads";
         print "Sorting $read_file...\n";
         system("sort -T ./$species --output=$read_file\.sort $read_file");
         move( "$read_file\.sort", $read_file );

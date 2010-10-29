@@ -15,6 +15,7 @@
 # 20/08/10 Added -species option to specify tags directory
 # 25/08/10 Version 1.0
 # 06/09/10 Fixed names of individuals (was leaving file extension on)
+# 29/10/10 1.0.2 Don't look for species name in input files
 
 #############################################################################
 ###
@@ -32,7 +33,7 @@ use Pod::Usage;
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.0;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.0.2;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -210,7 +211,7 @@ sub generate_tag_clusters {
         open my $tag_file, '<', "$species/$tag_filename"
           or die "Can't open $species/$tag_filename: $OS_ERROR!\n";
         $tag_filename =~ s/$end_tagfiles//;
-        my $individual = ( split /_/, $tag_filename )[1];
+        my $individual = $tag_filename;
         push @{$ind_ref}, $individual;
 
         my %cluster;
