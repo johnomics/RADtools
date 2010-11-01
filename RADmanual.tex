@@ -1,6 +1,6 @@
 \documentclass[a4paper]{article}
 
-\title{RADtools: Software for RAD Sequencing, Version 1.0}
+\title{RADtools: Software for RAD Sequencing, Version 1.1}
 \author{John Davey\\{\tt john.davey@ed.ac.uk}}
 
 \begin{document}
@@ -57,7 +57,7 @@ Each line contains the name of a pool and its corresponding MID, separated by a 
 We can then run RADpools as follows:
 
 \begin{verbatim}
-    RADpools --in s_1_1_sequence.fastq --species Beatles
+    RADpools -i s_1_1_sequence.fastq -d Beatles
 \end{verbatim}
 
 RADpools only accepts one FASTQ file per pool (although it will accept paired end reads - see next section). Reads from multiple lanes should be concatenated into one FASTQ file.
@@ -67,10 +67,10 @@ RADpools will create a directory called Beatles in the current directory and wri
 \begin{verbatim}
     Beatles
     - Beatles_20100825_150000_invalid.txt
-    - Beatles_John.reads
-    - Beatles_Paul.reads
-    - Beatles_George.reads
-    - Beatles_Ringo.reads
+    - John.reads
+    - Paul.reads
+    - George.reads
+    - Ringo.reads
 \end{verbatim}
 
 Reads can be rejected for several reasons:
@@ -82,7 +82,7 @@ Reads can be rejected for several reasons:
     \item Short: high quality sequence shorter than trim length
 \end{itemize}
 
-RADpools fuzzy matches restriction sites. One basepair error is allowed. The same can be done for MIDs using the \verb|-f| option.
+RADpools fuzzy matches restriction sites. One basepair error is allowed, including Ns. The same can be done for MIDs using the \verb|-f| option.
 
 \subsection{Basic options}
 
@@ -95,14 +95,14 @@ Output status messages during processing of reads, documenting how many reads ha
 
 RADpools can accept paired end reads with this option, eg:
 \begin{verbatim}
-    RADpools -i s_1_1_sequence.fastq -p s_1_2_sequence.fastq -s Beatles
+    RADpools -i s_1_1_sequence.fastq -p s_1_2_sequence.fastq -d Beatles
 \end{verbatim}
 
     \item \verb|-e, --enzyme|
     
     By default, RADpools looks for SbfI overhangs (TGCAGG). Use this option to specify a different enzyme overhang. Note that the overhang should be used, not the whole sequence, as it is the overhang sequence that is present in the reads. For example, EcoRI has sequence G*AATTC; RADpools will search for EcoRI-cut RAD reads with
     \begin{verbatim}
-        RADpools -i s_1_1_sequence.fastq -s Beatles -e AATTC
+        RADpools -i s_1_1_sequence.fastq -d Beatles -e AATTC
     \end{verbatim}
 
     \item \verb|-m, --max_processes|
@@ -128,6 +128,14 @@ These options have not been thoroughly tested and may reveal bugs or produce une
     
     If a MID sequence in a read contains an error, the read is usually thrown away. With this option, these reads will be accepted and assigned to the nearest pool. If the MID could be assigned to more than one pool, a new pool is created, named after all the possible pools for the ambiguous MID.
 
+    \item \verb|-s, --sanger|
+    
+    RADpools only works with Illumina reads, but can process Illumina or Sanger qualities. If your input file is in fastq-sanger format, use this option.
+
+    \item \verb|-o, --output_fastq|
+    
+    Output FASTQ format, rather than READS format. Use this option if you want to align your reads to a reference genome rather than use the rest of the RADtools pipeline (although RADtags will load FASTQ too).
+
 \end{itemize}
 
 
@@ -148,14 +156,14 @@ RADtags will produce a tags file for each reads file. If it was run within the B
 \begin{verbatim}
     Beatles
     - Beatles_20100825_150000_invalid.txt
-    - Beatles_John.reads
-    - Beatles_John.tags
-    - Beatles_Paul.reads
-    - Beatles_Paul.tags
-    - Beatles_George.reads
-    - Beatles_George.tags
-    - Beatles_Ringo.reads
-    - Beatles_Ringo.tags
+    - John.reads
+    - John.tags
+    - Paul.reads
+    - Paul.tags
+    - George.reads
+    - George.tags
+    - Ringo.reads
+    - Ringo.tags
 \end{verbatim}
 
 \subsection{Basic options}
@@ -163,15 +171,19 @@ RADtags will produce a tags file for each reads file. If it was run within the B
 \begin{itemize}
     \item \verb|-f, --file_extension|
     
-    By default, RADtags loads all files that end with `.reads'. Use this option to change this. To process a single file, use \verb|-f filename|.
+    By default, RADtags loads all files that end with `.reads'. Use this option to change this. To process a single file, use \verb|-f filename|. To process FASTQ data output by RADpools or from other sources, use \verb|-f '.fastq'|.
     
-    \item \verb|-s, --species|
+    \item \verb|-d, --directory|
     
     By default, RADtags searches for files in the current directory. To specify another directory, use this option. For example, to load the read files from the Beatles directory, run the following:
     
     \begin{verbatim}
-        RADtags -e 10000 -s Beatles
+        RADtags -e 10000 -d Beatles
     \end{verbatim}
+    
+    \item \verb|-s, --site|
+    
+    RADpools retains the restriction site overhang on the front of every read, as this sequence can be useful for aligning reads to a reference genome. The restriction site can be removed by RADtags using this option.
     
     \item \verb|-m, --max_processes|
     
@@ -220,14 +232,16 @@ The tool will output the tags to standard output. To save the output, pipe it to
     
     By default, RADmarkers loads all files that end with `.tags'. Use this option to change this.
     
-    \item \verb|-s, --species|
+    \item \verb|-d, --directory|
     
-    By default, RADtags searches for files in the current directory. To specify another directory, use this option. For example, to load the tag files from the Beatles directory, run the following:
+    By default, RADmarkers searches for files in the current directory. To specify another directory, use this option. For example, to load the tag files from the Beatles directory, run the following:
     
     \begin{verbatim}
-        RADmarkers -s Beatles
+        RADmarkers -d Beatles
     \end{verbatim}
     
+    RADmarkers also loads the corresponding pools file to preserve the order of individuals in the pools file in its output. It will look in the directory given by -d and the directory one level above for a pools file.
+
     \item \verb|-v, --verbose|
     
     Output status messages and summary statistics during run.
@@ -306,6 +320,10 @@ Each read file output by RADpools contains one read per line in the following fo
 \end{verbatim}
 
 Here, read2 refers to paired end data. Once both ends have been joined together, there is little use for the FASTQ headers, and so they are not preserved. Storing one read per line makes it easy to filter, sort and summarise each pool in many different ways with Unix tools, tasks which are mostly unpleasant with FASTQ data.
+
+If FASTQ output is desired, use the -o option. Separate files will be output for read 1 and read 2.
+
+RADpools outputs all qualities in fastq-sanger format, regardless of input format.
 
 \subsection{RADtags}
 

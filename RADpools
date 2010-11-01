@@ -18,6 +18,10 @@
 # 08/09/10 1.0.1 Minor bug fixes
 # 29/10/10 1.0.2 Accept at most one N in restriction enzyme, MID;
 #                Don't use species name in output filename
+# 30/10/10 1.1 Change species argument to directory argument
+#              Output restriction site sequence
+#              Add option to output FASTQ format
+#              Load and output fastq-sanger qualities
 
 #############################################################################
 ###
@@ -34,6 +38,8 @@ use Pod::Usage;
 use File::Copy;
 use Data::Dumper;
 
+use constant QUAL_OFFSET => 33;
+
 # Non-core modules
 eval {
     require Parallel::ForkManager;
@@ -47,7 +53,7 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.0.2;  # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.1;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -64,32 +70,36 @@ sub main {
 
     my $read1_file = q{};
     my $read2_file = q{};
-    my $species    = q{};
+    my $directory  = q{};
 
     my $max_processes = 1;
+    my $sanger        = 0;
+    my $output_fastq  = 0;
 
     my $res_site          = 'TGCAGG';    #SbfI
-    my $quality_threshold = -5;
+    my $quality_threshold = 0;
     my $trim              = 0;
-    my $fuzzy_MIDs  = 0;
+    my $fuzzy_MIDs        = 0;
 
     # Load user options
     my $options_okay = GetOptions(
 
         'help|h'    => \$help,
-        'usage'     => \$usage,
+        'usage|u'   => \$usage,
         'man'       => \$man,
         'verbose|v' => \$verbose,
 
-        'in|i=s'      => \$read1_file,
-        'paired|p=s'  => \$read2_file,
-        'species|s=s' => \$species,
+        'in|i=s'        => \$read1_file,
+        'paired|p=s'    => \$read2_file,
+        'directory|d=s' => \$directory,
 
         'max_processes|m=i' => \$max_processes,
+        'sanger|s'          => \$sanger,
+        'output_fastq|o'    => \$output_fastq,
 
-        'enzyme|e=s'         => \$res_site,
-        'quality|q=i'        => \$quality_threshold,
-        'trim|t=i'           => \$trim,
+        'enzyme|e=s'   => \$res_site,
+        'quality|q=i'  => \$quality_threshold,
+        'trim|t=i'     => \$trim,
         'fuzzy_MIDs|f' => \$fuzzy_MIDs,
 
     ) or pod2usage( -verbose => 0 );
@@ -100,10 +110,10 @@ sub main {
 
     # Validate options
     pod2usage( -verbose => 0 ) if ( $read1_file eq q{} );
-    pod2usage( -verbose => 0 ) if ( $species    eq q{} );
+    pod2usage( -verbose => 0 ) if ( $directory  eq q{} );
 
-    # Sugar: strip .pools from species argument if it has been added
-    $species =~ s/\.pools$//;
+    # Sugar: strip .pools from directory argument if it has been added
+    $directory =~ s/\.pools$//;
 
 #############################################################################
 ###
@@ -117,19 +127,19 @@ sub main {
     my %pool_handles    = ();
     if ($verbose) { print "Loading pools and MIDs...\n"; }
 
-    if ( $species ne q{} ) {
+    if ( $directory ne q{} ) {
 
         # Load pools from file into an array
-        my $pool_file = $species . '.pools';
+        my $pool_file = $directory . '.pools';
         open my $poolhandle, '<', $pool_file
           or die "Couldn't open '$pool_file': $OS_ERROR\n";
         my @pools = <$poolhandle>;
         close $poolhandle or die "Can't close $pool_file: $OS_ERROR\n";
 
-        if ( !-d "./$species" ) {
-            mkdir "./$species"
+        if ( !-d "./$directory" ) {
+            mkdir "./$directory"
               or die
-              "Can't create directory for $species output files: $OS_ERROR!\n";
+"Can't create directory for $directory output files: $OS_ERROR!\n";
         }
 
         # Load MIDs for all pools
@@ -165,7 +175,7 @@ sub main {
         }
     }
     else {
-        die 'Please name a species for pools and MIDs using the -s option';
+        die 'Please provide the name of your pools file using the -d option';
     }
 
     # Collapse lists of pools for each MID into unique, sorted, string
@@ -193,7 +203,7 @@ sub main {
             $mid_pools{$mid} = $pool_string;
 
             open $pool_handles{$pool_string}, '>',
-              "./$species/$pool_string\.reads"
+              "./$directory/$pool_string\.reads"
               or die "Can't open output file for $pool_string: $OS_ERROR\n";
         }
     }
@@ -213,7 +223,6 @@ sub main {
             $fuzzy_res_sites{$fuzzyseq} = $res_site;
         }
     }
-
 
 #############################################################################
 ###
@@ -235,6 +244,14 @@ sub main {
     my $record_count_total = 0;
     my $record_count_valid = 0;
 
+    # Set up quality thresholds and characters
+    my $qual_low_char  = ';';
+    my $qual_high_char = 'h';
+    if ($sanger) {
+        $qual_low_char  = '!';
+        $qual_high_char = 'I';
+    }
+
     # Open RAD sequence file
     open my $read1_in, '<', $read1_file
       or die "Couldn't open '$read1_file': $OS_ERROR";
@@ -246,13 +263,13 @@ sub main {
     }
 
     # Output invalid/unclustered sequences
-    my $results_file_stem = "./$species/$species\_" . get_timestamp();
+    my $results_file_stem = "./$directory/$directory\_" . get_timestamp();
     my $invalid_file      = "$results_file_stem\_invalid.txt";
     open my $invalid_handle, '>', $invalid_file
       or die "Can't open $invalid_file: $OS_ERROR";
 
     print {$invalid_handle}
-"Input files: $read1_file, $read2_file; Species: $species, Enzyme site: $res_site; Trim length: $trim; Quality threshold: $quality_threshold\n"
+"Input files: $read1_file, $read2_file; Directory: $directory, Enzyme site: $res_site; Trim length: $trim; Quality threshold: $quality_threshold\n"
       or die "Can't write to $invalid_file: $OS_ERROR\n";
 
     # Load RAD sequences into hash of pools with counts for identical sequences
@@ -270,10 +287,10 @@ sub main {
         $fastq_quality_header = q{};
         $fastq_quality        = q{};
 
-        my $read2_header         = q{};
-        my $read2_sequence       = q{};
-        my $read2_quality_header = q{};
-        my $read2_quality        = q{};
+        my $read2_sequence_header = q{};
+        my $read2_sequence        = q{};
+        my $read2_quality_header  = q{};
+        my $read2_quality         = q{};
 
         # Find start of a FASTQ record (line beginning with @)
         if ( $fastq_sequence_header =~ /^@(\S+)/xms ) {
@@ -283,34 +300,14 @@ sub main {
             chomp $fastq_sequence;
             chomp $fastq_quality;
             if ( $read2_file ne q{} ) {
-                $read2_header         = <$read2_in>;
-                $read2_sequence       = <$read2_in>;
-                $read2_quality_header = <$read2_in>;
-                $read2_quality        = <$read2_in>;
+                $read2_sequence_header = <$read2_in>;
+                $read2_sequence        = <$read2_in>;
+                $read2_quality_header  = <$read2_in>;
+                $read2_quality         = <$read2_in>;
 
                 chomp $read2_sequence;
                 chomp $read2_quality;
             }
-        }
-
-        # Throw away bad FASTQ records
-        if (   ( $fastq_sequence !~ /^[AGCTN\.]+$/xms )
-            || ( $fastq_quality_header !~ /^\+/xms )
-            || ( $fastq_quality !~ /^[;-h]+$/xms ) )
-        {
-            chomp $fastq_sequence_header;
-            chomp $fastq_quality_header;
-
-            print {$invalid_handle}
-"Sequence, quality or quality header not valid FASTQ: $fastq_sequence $fastq_quality $fastq_sequence_header $fastq_quality_header\n"
-              or die "Can't write to $invalid_file: $OS_ERROR\n";
-            $non_fastq_count++;
-            next LOAD_ONE_SEQUENCE;
-        }
-
-        # Set trim to length of RAD sequence if not previously set
-        if ( $trim == 0 ) {
-            $trim = ( length $fastq_sequence ) - $mid_length - $res_site_length;
         }
 
         # Update progress meter
@@ -322,11 +319,49 @@ sub main {
               $wrong_ressite_count, $wrong_mid_count, $short_sequence_count;
         }
 
+        # Throw away bad FASTQ records
+        if (   ( $fastq_sequence !~ /^[AGCTN\.]+$/xms )
+            || ( $fastq_quality_header !~ /^\+/xms )
+            || ( $fastq_quality !~ /^[$qual_low_char-$qual_high_char]+$/xms ) )
+        {
+            chomp $fastq_sequence_header;
+            chomp $fastq_quality_header;
+
+            print {$invalid_handle}
+"Sequence, quality or quality header not valid FASTQ: $fastq_sequence $fastq_quality $fastq_sequence_header $fastq_quality_header\n"
+              or die "Can't write to $invalid_file: $OS_ERROR\n";
+            $non_fastq_count++;
+            next LOAD_ONE_SEQUENCE;
+        }
+
+        # Get read name
+        my $read1_name = q{};
+        if ( $fastq_sequence_header =~ /^\@(.+)$/ ) {
+            $read1_name = $1;
+        }
+
+        my $read2_name = q{};
+        if ( $read2_sequence_header =~ /^\@(.+)/ ) {
+            $read2_name = $1;
+        }
+
+        # If quality in Illumina format, convert to Sanger format
+        if ( !$sanger ) {
+            $fastq_quality =~ tr/\x40-\xff\x00-\x3f/\x21-\xe0\x21/;
+            if ( $read2_file ne q{} ) {
+                $read2_quality =~ tr/\x40-\xff\x00-\x3f/\x21-\xe0\x21/;
+            }
+        }
+
+        # Set trim to length of RAD sequence if not previously set
+        if ( $trim == 0 ) {
+            $trim = ( length $fastq_sequence ) - $mid_length;
+        }
+
         # Find any point where Q<20 and strip off sequence following this point
-        # Q=20 is ASCII M; Q=40 is ASCII h
-        # This automatically strips the N / ; off the end of the sequence
-        my $qual_threshold_char = chr( $quality_threshold + 64 );
-        if ( $fastq_quality =~ m{(\A[$qual_threshold_char-h]+)}xms ) {
+        # Illumina data in Sanger FASTQ format
+        my $qual_threshold_char = chr( $quality_threshold + QUAL_OFFSET );
+        if ( $fastq_quality =~ m{(\A[$qual_threshold_char-I]+)}xms ) {
             $quality_tail = $1;
         }
         else {
@@ -342,12 +377,14 @@ sub main {
 
         # Find restriction enzyme site; if not found, skip sequence
         if (
-            $sequence =~ m{^([AGCTN]{$mid_length})
-                        ([AGCTN]{$res_site_length})
-                        ([AGCTN\.]+)$}xms
+            $sequence =~ m{^([ACGTN]{$mid_length})
+                        ([ACGTN]{$res_site_length})
+                        ([ACGTN\.]+)$}xms
           )
         {
-            ( $mid, $seq_res_site, $dna_sequence ) = ( $1, $2, $3 );
+            $mid          = $1;
+            $seq_res_site = $2;
+            $dna_sequence = $2 . $3;
         }
         else {
             chomp $fastq_sequence_header;
@@ -366,11 +403,12 @@ sub main {
 
             print {$invalid_handle} 'Restriction enzyme site does not match'
               . "             : $fastq_sequence $fastq_quality "
-              . "$seq_res_site $sequence\n"
+              . "$seq_res_site $dna_sequence\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
             $wrong_ressite_count++;
             next LOAD_ONE_SEQUENCE;
         }
+
         # Find pool for this MID; if no pool, make pool for this MID alone
         if ( !( exists $mid_pools{$mid} ) ) {
 
@@ -389,18 +427,22 @@ sub main {
         # Increment the number of times this sequence has occurred
         if ( length($dna_sequence) >= $trim ) {
 
-            # Remove MID and res site bases from read 1 quality string
-            if ( $quality_tail =~
-                m{^(.{$mid_length})(.{$res_site_length})(.+)$}xms )
-            {
-                $quality_tail = $3;
+            # Remove MID from read 1 quality string
+            if ( $quality_tail =~ m{^(.{$mid_length})(.+)$}xms ) {
+                $quality_tail = $2;
             }
             $dna_sequence = substr $dna_sequence, 0, $trim;
             $quality_tail = substr $quality_tail, 0, $trim;
 
+            if ( $output_fastq && ( $read1_name ne q{} ) ) {
+                print { $pool_handles{$pool} } "$read1_name ";
+            }
             print { $pool_handles{$pool} } "$dna_sequence $quality_tail"
               or die "Can't write to pools file: $OS_ERROR\n";
             if ( $read2_file ne q{} ) {
+                if ( $output_fastq && ( $read2_name ne q{} ) ) {
+                    print { $pool_handles{$pool} } " $read2_name";
+                }
                 print { $pool_handles{$pool} }
                   " $read2_sequence $read2_quality";
             }
@@ -432,16 +474,53 @@ sub main {
     if ($verbose) { print "Sorting pooled reads...\n"; }
 
     my @pool_ids = sort keys %pool_handles;
-    my $pm       = new Parallel::ForkManager(scalar(@pool_ids));
+    my $pm       = new Parallel::ForkManager( scalar(@pool_ids) );
     $pm->set_max_procs($max_processes);
 
     foreach my $pool_id (@pool_ids) {
         $pm->start and next;
 
-        my $read_file = "./$species/$pool_id\.reads";
-        print "Sorting $read_file...\n";
-        system("sort -T ./$species --output=$read_file\.sort $read_file");
-        move( "$read_file\.sort", $read_file );
+        my $read_filename = "./$directory/$pool_id\.reads";
+        if ($verbose) { print "Sorting $read_filename...\n"; }
+        my $sort_start = $res_site_length + 1;
+        my $read1_field = $output_fastq ? 2 : 1;
+        system(
+"sort -t ' ' -k$read1_field\.$sort_start -T ./$directory --output=$read_filename\.sort $read_filename"
+        );
+
+        move( "$read_filename\.sort", $read_filename );
+
+        # Convert reads to FASTQ
+        if ($output_fastq) {
+            if ($verbose) {
+                print "Converting $read_filename to FASTQ format...\n";
+            }
+
+            open my $fastq1_file, '>', "./$directory/$pool_id\_1\.fastq";
+            my $fastq2_file;
+            if ( $read2_file ne q{} ) {
+                open $fastq2_file, '>', "./$directory/$pool_id\_2\.fastq";
+            }
+
+            open my $read_file, '<', $read_filename;
+            while ( my $read_line = <$read_file> ) {
+                chomp $read_line;
+
+                my @read_fields = split / /, $read_line;
+
+                print $fastq1_file
+"\@$read_fields[0]\n$read_fields[1]\n\+$read_fields[0]\n$read_fields[2]\n";
+
+                if ( $read2_file ne q{} ) {
+                    print $fastq2_file
+"\@$read_fields[3]\n$read_fields[4]\n\+$read_fields[3]\n$read_fields[5]\n";
+                }
+            }
+            close $read_file;
+            if ( $read2_file ne q{} ) { close $fastq2_file; }
+            close $fastq1_file;
+            unlink($read_filename);
+        }
 
         $pm->finish;
     }
@@ -467,7 +546,7 @@ sub main {
           . "$wrong_rad_format_count records not in RAD format, \n"
           . "$wrong_ressite_count records not matching restriction enzyme site, \n"
           . "$wrong_mid_count records not matching any listed MIDs, and \n"
-          . "$short_sequence_count records with high-quality sequences less than $trim long\n"
+          . "$short_sequence_count records with high-quality sequences less than $trim bp long\n"
           . "Done\n";
     }
 
@@ -514,13 +593,13 @@ RADpools - Take raw Illumina RAD reads and create read files for a set of pools
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.0.
+This documentation refers to RADtools version 1.1.
 
 =head1 SYNOPSIS
 
 =over 8
 
-=item RADpools --in file --species species_name [options]
+=item RADpools --in <FILE> --directory <DIRECTORY> [options]
 
 =item RADpools --help
 
@@ -534,7 +613,7 @@ This documentation refers to RADtools version 1.0.
 
 Print a brief help message and exit
 
-=item B<--usage>
+=item B<-u, --usage>
 
 Print concise usage and exit
 
@@ -558,9 +637,9 @@ File containing single end Illumina RAD reads in FASTQ format (required)
 
 File containing paired end Illumina RAD reads in FASTQ format (optional)
 
-=item B<-s, --species>
+=item B<-d, --directory>
 
-Name of species to be sequenced, matching name of pools file (required)
+Name of output directory, matching name of pools file (required)
 
 =item B<-m, --max_processes>
 
@@ -572,7 +651,7 @@ Sequence of cut site for used restriction enzyme (default TGCAGG, SbfI)
 
 =item B<-q, --quality>
 
-Minimum acceptable quality score (default -5, ie all bases accepted)
+Minimum acceptable quality score (default 0, ie all bases accepted)
 
 =item B<-t, --trim>
 
@@ -581,6 +660,14 @@ Trim all reads to this length (default max length of read, ie no trimming)
 =item B<-f, --fuzzy_MIDs>
 
 If a MID contains an error, search for the closest MID sequence. If more than one MID found, create a new MID for the intermediate sequence (default off)
+
+=item B<-s, --sanger>
+
+Specify this option if input files are in fastq-sanger format, not fastq-illumina format.
+
+=item B<-o, --output_fastq>
+
+Outputs FASTQ format rather than reads format.
 
 =back
 

@@ -1,0 +1,16 @@
+1.1
+  RADpools
+    - New option: -s. Loads reads with Sanger qualities.
+    - New option: -o. Outputs FASTQ format, preserving read names
+    - Outputs Sanger qualities, converting Illumina qualities if necessary
+    - leaves restriction site overhang on all reads, preserving variations
+    - species option changed to directory option, directory name no longer
+      output on every output file
+  RADtags
+    - Loads FASTQ format with -f '.fastq'
+    - New option: -s. Removes restriction site overhang from start of reads.
+    - Loads Sanger qualities, not Illumina qualities
+    - species option changed to directory option
+  RADmarkers
+    - Loads Sanger qualities, not Illumina qualities
+    - Load individuals from pools file and keep individuals in this order

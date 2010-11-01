@@ -16,6 +16,8 @@
 # 25/08/10 Version 1.0
 # 06/09/10 Fixed names of individuals (was leaving file extension on)
 # 29/10/10 1.0.2 Don't look for species name in input files
+# 30/10/10 1.1   Load Sanger qualities, not Illumina
+#                Load individuals from pools file and keep in this order
 
 #############################################################################
 ###
@@ -28,12 +30,17 @@ use warnings;
 use English qw(-no_match_vars );
 use Getopt::Long qw(:config bundling no_auto_abbrev auto_version);
 use Pod::Usage;
+use Cwd;
+use Cwd 'abs_path';
+use File::Basename;
+
+use constant QUAL_OFFSET => 33;
 
 # Would like to use Carp, but an outstanding bug causes cryptic errors
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.0.2;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.1;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -46,8 +53,8 @@ sub main {
     my $usage = 0;
     my $man   = 0;
 
-    my $end_tagfiles = '\.tags';
-    my $species      = '.';
+    my $end_tagfiles = '.tags';
+    my $directory    = abs_path;
 
     my $verbose   = 0;
     my $snpsout   = 0;
@@ -61,20 +68,20 @@ sub main {
 
     my $options_okay = GetOptions(
 
-        'help|h' => \$help,
-        'usage'  => \$usage,
-        'man'    => \$man,
+        'help|h'  => \$help,
+        'usage|u' => \$usage,
+        'man'     => \$man,
 
         'end_tagfiles|e=s' => \$end_tagfiles,
-        'species|s=s'     => \$species,
+        'directory|d=s'    => \$directory,
 
         'verbose|v'   => \$verbose,
-        'snpsout|o'  => \$snpsout,
+        'snpsout|o'   => \$snpsout,
         'qualsout|q'  => \$qualsout,
         'fragments|f' => \$fragments,
 
         'tag_count_threshold|t=i' => \$tag_count_threshold,
-        'mismatches|m=i'   => \$hamming_threshold,
+        'mismatches|m=i'          => \$hamming_threshold,
 
         'include_singletons|i' => \$include_singletons,
 
@@ -86,7 +93,6 @@ sub main {
 
     my %tag_clusters;
     my %tags;
-    my @individuals;
 
 #############################################################################
 ###
@@ -94,17 +100,42 @@ sub main {
 ###
 #############################################################################
 
-    opendir( my $tagdir, $species);
-    my @tag_filenames = grep { /($end_tagfiles)$/ } readdir $tagdir;
-    closedir $tagdir;
+    # Find pools file for list of individuals
+    my $current_dir  = getcwd;
+    my $base_dirname = basename($directory);
 
-    if (@tag_filenames == 0) {die "No tag files found. You may need to specify the tag file directory using -s, or specify the correct tag file extension using -e.\n";}
+    my $pools_directory = $directory eq $current_dir ? "$current_dir/.." : $current_dir;
+
+    my @pools_files;
+    opendir (my $poolsdir, $pools_directory);
+    @pools_files = grep { /^$base_dirname\.pools$/ } readdir $poolsdir;
+
+    if ( @pools_files == 0 ) {
+        die
+"No pools file found! Please check current directory or specify -d option\n";
+    }
+
+    if ( @pools_files > 1 ) {
+        die
+"More than one pools file found! Please rename pools files or use a different -d option\n";
+    }
+
+    my $pools_filename = $pools_files[0];
+    open my $pools_file, '<', "$pools_directory/$pools_filename"
+      or die "Can't open pools file $pools_directory/$pools_filename\n";
+    my @individuals;
+    while ( my $pools_line = <$pools_file> ) {
+        chomp $pools_line;
+        my ( $name, $mid ) = split / /, $pools_line;
+        push @individuals, $name;
+    }
+
+    close $pools_file;
 
     generate_tag_clusters(
         {
-            tag_filenames       => \@tag_filenames,
             end_tagfiles        => $end_tagfiles,
-            species             => $species,
+            directory           => $directory,
             tag_clusters        => \%tag_clusters,
             tags                => \%tags,
             individuals         => \@individuals,
@@ -114,8 +145,6 @@ sub main {
             verbose             => $verbose,
         }
     );
-
-    @individuals = sort @individuals;
 
     if ($verbose) {
         print scalar( keys %tag_clusters )
@@ -177,9 +206,8 @@ sub main {
 #############################################################################
 ### Name:       GENERATE TAG CLUSTERS
 ### Function:   Cluster tags across all individuals
-### Parameters: tag_filenames       - files containing RAD tags from RADtags
-###             end_tagfiles        - for removing filename extensions
-###             species             - pools folder to load tags from
+### Parameters: end_tagfiles        - for removing filename extensions
+###             directory             - pools folder to load tags from
 ###             tag_clusters        - hash of clusters containing tags
 ###             tags                - hash of tags alone for reference
 ###             individuals         - list of sample names
@@ -194,9 +222,8 @@ sub generate_tag_clusters {
 
     my ($arg_ref) = @_;
 
-    my $file_ref            = $arg_ref->{tag_filenames};
     my $end_tagfiles        = $arg_ref->{end_tagfiles};
-    my $species             = $arg_ref->{species};
+    my $directory           = $arg_ref->{directory};
     my $tag_clus_ref        = $arg_ref->{tag_clusters};
     my $tags_ref            = $arg_ref->{tags};
     my $ind_ref             = $arg_ref->{individuals};
@@ -207,12 +234,18 @@ sub generate_tag_clusters {
 
     my $new_cluster_id = 0;
 
-    foreach my $tag_filename ( sort @{$file_ref} ) {
-        open my $tag_file, '<', "$species/$tag_filename"
-          or die "Can't open $species/$tag_filename: $OS_ERROR!\n";
-        $tag_filename =~ s/$end_tagfiles//;
-        my $individual = $tag_filename;
-        push @{$ind_ref}, $individual;
+    foreach my $individual ( @{$ind_ref} ) {
+
+        open my $tag_file, '<', "$directory/$individual$end_tagfiles"
+          or die "Can't open $directory/$individual$end_tagfiles: $OS_ERROR!\n";
+
+        #    foreach my $tag_filename ( sort @{$file_ref} ) {
+        #        open my $tag_file, '<', "$directory/$tag_filename"
+        #          or die "Can't open $directory/$tag_filename: $OS_ERROR!\n";
+        #        $tag_filename =~ s/$end_tagfiles//;
+        #        my $individual = $tag_filename;
+
+        #        push @{$ind_ref}, $individual;
 
         my %cluster;
 
@@ -566,7 +599,7 @@ sub print_seg_tags {
     print "\t";
     print q{ } x length @{ $seg_tags_ref->{tags} }[0]->[0]->{sequence};
     print q{    };
-    foreach my $ind ( sort @{$ind_ref} ) {
+    foreach my $ind ( @{$ind_ref} ) {
         if ( length($ind) < 3 ) {
             print q{ } x ( 3 - length $ind );
             print "$ind    ";
@@ -610,7 +643,7 @@ sub print_seg_tags {
 
 sub print_tag_counts {
     my ( $seq_ref, $ind_ref, $quals, $fragments ) = @_;
-    foreach my $individual ( sort @{$ind_ref} ) {
+    foreach my $individual ( @{$ind_ref} ) {
 
         my $count =
             $fragments
@@ -625,12 +658,12 @@ sub print_tag_counts {
     }
     print "\n";
     if ($quals) {
-        foreach my $individual ( sort @{$ind_ref} ) {
+        foreach my $individual ( @{$ind_ref} ) {
             if ( defined $seq_ref->{$individual}{qual} ) {
                 print "\t";
                 my @quals = split //, $seq_ref->{$individual}{qual};
                 foreach my $qual (@quals) {
-                    my $qual_score = ord($qual) - 64;
+                    my $qual_score = ord($qual) - QUAL_OFFSET;
 
                     if    ( $qual_score < 20 ) { print q{!}; }
                     elsif ( $qual_score < 30 ) { print q{?}; }
@@ -661,8 +694,7 @@ sub print_seg_snps {
         my %pos_bases;
         foreach my $allele_ref ( @{$tag_ref} ) {
             my $allele_base = substr $allele_ref->{sequence}, $pos, 1;
-            foreach my $individual ( sort keys %{ $allele_ref->{individuals} } )
-            {
+            foreach my $individual ( keys %{ $allele_ref->{individuals} } ) {
                 my $count =
                     $fragments
                   ? $allele_ref->{individuals}{$individual}{unique}
@@ -747,7 +779,7 @@ RADmarkers - generates candidate markers from RAD tags across many individuals
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.0.
+This documentation refers to RADtools version 1.1.
 
 =head1 SYNOPSIS
 
@@ -767,7 +799,7 @@ This documentation refers to RADtools version 1.0.
 
 Print a brief help message and exit
 
-=item B<--usage>
+=item B<-u, --usage>
 
 Print concise usage and exit
 
@@ -783,7 +815,7 @@ Print version number and exit
 
 Suffix of filenames containing RAD tags (default '.tags')
 
-=item B<-s, --species>
+=item B<-d, --directory>
 
 Name of directory containing tags files (ie prefix of pools filename if using RADtools conventions) (default .)
 
@@ -801,11 +833,11 @@ Output quality summaries for tags (default off; ? = Q below 30, ! = Q below 20)
 
 =item B<-f, --fragments>
 
-Output fragment counts instead of read counts (default off). A fragment is a unique single/paired end combination.
+Output fragment counts instead of read counts (default off). A fragment is a unique single/paired end combination. Multiple copies of a fragment are likely to be PCR duplicates, and so the use of this option is recommended.
 
 =item B<-t, --tag_count_threshold>
 
-Tags with counts below this threshold are rejected (default 0; uses read counts by default, fragment counts if -f is set)
+Tags with counts below THRES are rejected (default 0; uses read counts by default, fragment counts if -f is set)
 
 =item B<-m, --mismatches>
 
