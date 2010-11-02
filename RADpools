@@ -38,7 +38,7 @@ use Pod::Usage;
 use File::Copy;
 use Data::Dumper;
 
-use constant QUAL_OFFSET => 33;
+use RADtools qw(load_fastq_pair sort_reads_file QUAL_OFFSET);
 
 # Non-core modules
 eval {
@@ -234,11 +234,6 @@ sub main {
 
     # Initialise sequence, quality and RAD variables
 
-    my $fastq_sequence_header = q{};    # Empty string
-    my $fastq_sequence        = q{};
-    my $fastq_quality_header  = q{};
-    my $fastq_quality         = q{};
-
     my $quality_tail       = q{};
     my $sequence           = q{};
     my $record_count_total = 0;
@@ -281,34 +276,19 @@ sub main {
     my $short_sequence_count   = 0;
 
   LOAD_ONE_SEQUENCE:
-    while ( $fastq_sequence_header = <$read1_in> ) {
-
-        $fastq_sequence       = q{};    # Empty string
-        $fastq_quality_header = q{};
-        $fastq_quality        = q{};
-
-        my $read2_sequence_header = q{};
-        my $read2_sequence        = q{};
-        my $read2_quality_header  = q{};
-        my $read2_quality         = q{};
-
-        # Find start of a FASTQ record (line beginning with @)
-        if ( $fastq_sequence_header =~ /^@(\S+)/xms ) {
-            $fastq_sequence       = <$read1_in>;
-            $fastq_quality_header = <$read1_in>;
-            $fastq_quality        = <$read1_in>;
-            chomp $fastq_sequence;
-            chomp $fastq_quality;
-            if ( $read2_file ne q{} ) {
-                $read2_sequence_header = <$read2_in>;
-                $read2_sequence        = <$read2_in>;
-                $read2_quality_header  = <$read2_in>;
-                $read2_quality         = <$read2_in>;
-
-                chomp $read2_sequence;
-                chomp $read2_quality;
+    while (
+        my $pair_ref = load_fastq_pair(
+            {
+                read1_handle   => $read1_in,
+                read2_handle   => $read2_in,
+                qual_low_char  => $qual_low_char,
+                qual_high_char => $qual_high_char,
+                illumina       => !$sanger,
             }
-        }
+        )
+      )
+    {
+        last if ( $pair_ref->{valid} == -1 );
 
         # Update progress meter
         $record_count_total++;
@@ -319,49 +299,23 @@ sub main {
               $wrong_ressite_count, $wrong_mid_count, $short_sequence_count;
         }
 
-        # Throw away bad FASTQ records
-        if (   ( $fastq_sequence !~ /^[AGCTN\.]+$/xms )
-            || ( $fastq_quality_header !~ /^\+/xms )
-            || ( $fastq_quality !~ /^[$qual_low_char-$qual_high_char]+$/xms ) )
-        {
-            chomp $fastq_sequence_header;
-            chomp $fastq_quality_header;
-
+        if ( !$pair_ref->{valid}) {
             print {$invalid_handle}
-"Sequence, quality or quality header not valid FASTQ: $fastq_sequence $fastq_quality $fastq_sequence_header $fastq_quality_header\n"
+"Invalid FASTQ record: $pair_ref->{r1name} $pair_ref->{r1seq} $pair_ref->{r1qual}\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
             $non_fastq_count++;
             next LOAD_ONE_SEQUENCE;
         }
 
-        # Get read name
-        my $read1_name = q{};
-        if ( $fastq_sequence_header =~ /^\@(.+)$/ ) {
-            $read1_name = $1;
-        }
-
-        my $read2_name = q{};
-        if ( $read2_sequence_header =~ /^\@(.+)/ ) {
-            $read2_name = $1;
-        }
-
-        # If quality in Illumina format, convert to Sanger format
-        if ( !$sanger ) {
-            $fastq_quality =~ tr/\x40-\xff\x00-\x3f/\x21-\xe0\x21/;
-            if ( $read2_file ne q{} ) {
-                $read2_quality =~ tr/\x40-\xff\x00-\x3f/\x21-\xe0\x21/;
-            }
-        }
-
         # Set trim to length of RAD sequence if not previously set
         if ( $trim == 0 ) {
-            $trim = ( length $fastq_sequence ) - $mid_length;
+            $trim = ( length $pair_ref->{r1seq} ) - $mid_length;
         }
 
         # Find any point where Q<20 and strip off sequence following this point
         # Illumina data in Sanger FASTQ format
         my $qual_threshold_char = chr( $quality_threshold + QUAL_OFFSET );
-        if ( $fastq_quality =~ m{(\A[$qual_threshold_char-I]+)}xms ) {
+        if ( $pair_ref->{r1qual} =~ m{(\A[$qual_threshold_char-I]+)}xms ) {
             $quality_tail = $1;
         }
         else {
@@ -369,7 +323,7 @@ sub main {
         }
 
         # Get substring of sequence of length quality_substring
-        $sequence = substr( $fastq_sequence, 0, length $quality_tail );
+        $sequence = substr( $pair_ref->{r1seq}, 0, length $quality_tail );
 
         my $mid          = q{};    # Empty string
         my $seq_res_site = q{};
@@ -387,13 +341,8 @@ sub main {
             $dna_sequence = $2 . $3;
         }
         else {
-            chomp $fastq_sequence_header;
-            chomp $fastq_sequence;
-            chomp $fastq_quality_header;
-            chomp $fastq_quality;
-
             print {$invalid_handle}
-"Sequence is not a valid RAD sequence               : $fastq_sequence $fastq_quality $sequence\n"
+"Sequence is not a valid RAD sequence               : $pair_ref->{r1seq} $pair_ref->{r1qual} $sequence\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
             $wrong_rad_format_count++;
             next LOAD_ONE_SEQUENCE;
@@ -402,7 +351,7 @@ sub main {
         if ( !( exists $fuzzy_res_sites{$seq_res_site} ) ) {
 
             print {$invalid_handle} 'Restriction enzyme site does not match'
-              . "             : $fastq_sequence $fastq_quality "
+              . "             : $pair_ref->{r1seq} $pair_ref->{r1qual} "
               . "$seq_res_site $dna_sequence\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
             $wrong_ressite_count++;
@@ -416,7 +365,7 @@ sub main {
 
             # If MID not found, reject read
             print {$invalid_handle} 'MID is not a valid MID'
-              . "                     : $fastq_sequence $fastq_quality "
+              . "                     : $pair_ref->{r1seq} $pair_ref->{r1qual} "
               . "$mid $sequence\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
             $wrong_mid_count++;
@@ -434,17 +383,17 @@ sub main {
             $dna_sequence = substr $dna_sequence, 0, $trim;
             $quality_tail = substr $quality_tail, 0, $trim;
 
-            if ( $output_fastq && ( $read1_name ne q{} ) ) {
-                print { $pool_handles{$pool} } "$read1_name ";
+            if ( $output_fastq && ( $pair_ref->{r1name} ne q{} ) ) {
+                print { $pool_handles{$pool} } "$pair_ref->{r1name} ";
             }
             print { $pool_handles{$pool} } "$dna_sequence $quality_tail"
               or die "Can't write to pools file: $OS_ERROR\n";
             if ( $read2_file ne q{} ) {
-                if ( $output_fastq && ( $read2_name ne q{} ) ) {
-                    print { $pool_handles{$pool} } " $read2_name";
+                if ( $output_fastq && ( $pair_ref->{r2name} ne q{} ) ) {
+                    print { $pool_handles{$pool} } " $pair_ref->{r2name}";
                 }
                 print { $pool_handles{$pool} }
-                  " $read2_sequence $read2_quality";
+                  " $pair_ref->{r2seq} $pair_ref->{r2qual}";
             }
             print { $pool_handles{$pool} } "\n";
             $record_count_valid++;
@@ -455,7 +404,7 @@ sub main {
             print {$invalid_handle} 'Sequence shorter than ' 
               . $trim
               . ' base pairs                : '
-              . "$fastq_sequence $fastq_quality $dna_sequence\n"
+              . "$pair_ref->{r1seq} $pair_ref->{r1qual} $dna_sequence\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
             $short_sequence_count++;
 
@@ -482,24 +431,30 @@ sub main {
 
         my $read_filename = "./$directory/$pool_id\.reads";
         if ($verbose) { print "Sorting $read_filename...\n"; }
-        my $sort_start = $res_site_length + 1;
-        my $read1_field = $output_fastq ? 2 : 1;
-        system(
-"sort -t ' ' -k$read1_field\.$sort_start -T ./$directory --output=$read_filename\.sort $read_filename"
-        );
 
-        move( "$read_filename\.sort", $read_filename );
+        sort_reads_file(
+            {
+                directory     => $directory,
+                read_filename => $read_filename,
+                sort_start    => $res_site_length + 1,
+                read1_field   => $output_fastq ? 2 : 1,
+            }
+        );
 
         # Convert reads to FASTQ
         if ($output_fastq) {
             if ($verbose) {
-                print "Converting $read_filename to FASTQ format...\n";
+                print "Converting $pool_id to FASTQ format...\n";
             }
 
-            open my $fastq1_file, '>', "./$directory/$pool_id\_1\.fastq";
+            my $fastq1_file;
             my $fastq2_file;
             if ( $read2_file ne q{} ) {
+                open $fastq1_file, '>', "./$directory/$pool_id\_1\.fastq";
                 open $fastq2_file, '>', "./$directory/$pool_id\_2\.fastq";
+            }
+            else {
+                open $fastq1_file, '>', "./$directory/$pool_id\.fastq";                
             }
 
             open my $read_file, '<', $read_filename;

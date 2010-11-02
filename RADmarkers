@@ -30,11 +30,9 @@ use warnings;
 use English qw(-no_match_vars );
 use Getopt::Long qw(:config bundling no_auto_abbrev auto_version);
 use Pod::Usage;
-use Cwd;
 use Cwd 'abs_path';
-use File::Basename;
 
-use constant QUAL_OFFSET => 33;
+use RADtools qw(get_pools_filename QUAL_OFFSET);
 
 # Would like to use Carp, but an outstanding bug causes cryptic errors
 # when using caller(), so using die until this is fixed
@@ -101,28 +99,8 @@ sub main {
 #############################################################################
 
     # Find pools file for list of individuals
-    my $current_dir  = getcwd;
-    my $base_dirname = basename($directory);
+    my $pools_file = get_pools_filename($directory);
 
-    my $pools_directory = $directory eq $current_dir ? "$current_dir/.." : $current_dir;
-
-    my @pools_files;
-    opendir (my $poolsdir, $pools_directory);
-    @pools_files = grep { /^$base_dirname\.pools$/ } readdir $poolsdir;
-
-    if ( @pools_files == 0 ) {
-        die
-"No pools file found! Please check current directory or specify -d option\n";
-    }
-
-    if ( @pools_files > 1 ) {
-        die
-"More than one pools file found! Please rename pools files or use a different -d option\n";
-    }
-
-    my $pools_filename = $pools_files[0];
-    open my $pools_file, '<', "$pools_directory/$pools_filename"
-      or die "Can't open pools file $pools_directory/$pools_filename\n";
     my @individuals;
     while ( my $pools_line = <$pools_file> ) {
         chomp $pools_line;

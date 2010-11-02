@@ -30,7 +30,7 @@ use Getopt::Long qw(:config bundling no_auto_abbrev auto_version );
 use Pod::Usage;
 use POSIX qw{ceil};
 
-use constant QUAL_OFFSET => 33;
+use RADtools qw (load_fastq_pair sort_reads_file QUAL_OFFSET);
 
 # Non-core modules
 eval {
@@ -64,7 +64,9 @@ sub main {
     my $quality_threshold = 20;
     my $read_threshold    = 2;
     my $max_processes     = 1;
-    my $site              = q{};
+    my $site              = '-';
+    my $illumina          = 0;
+    my $fastq             = 0;
 
     my $options_okay = GetOptions(
 
@@ -76,6 +78,8 @@ sub main {
         'directory|d=s'      => \$directory,
         'expected_tags|e=i'  => \$expected_tags,
         'site|s=s'           => \$site,
+        'illumina|i'         => \$illumina,
+        'fastq|z'            => \$fastq,
 
         'quality_threshold|q=i' => \$quality_threshold,
         'read_threshold|r=i'    => \$read_threshold,
@@ -88,20 +92,34 @@ sub main {
 
     pod2usage( -verbose => 0 ) if ( $expected_tags == -1 );
 
+    pod2usage( -verbose => 0 ) if ( $fastq && $site eq '-' );
+
     opendir( my $readdir, $directory );
     my @read_filenames = grep { /($file_extension)$/ } readdir $readdir;
     if ( @read_filenames == 0 ) {
         die
-"No read files found. You may need to specify the read file directory using -s. If using FASTQ input, please use -f '.fastq'\n";
+"No read files found. Please specify -f. You may need to specify the read file directory using -d.\n";
     }
     closedir $readdir;
 
-    my @nopaired_files;
-    foreach my $read_filename (@read_filenames) {
-        next if ( $read_filename =~ /\_2.fastq$/ );
-        push @nopaired_files, $read_filename;
+    my %pair_filenames;
+    if ($fastq) {
+        my @paired_files;
+        foreach my $read_filename (@read_filenames) {
+            if ( $read_filename =~ /^$directory\/(.+)\_1\$file_extension$/ ) {
+                my $filename_stub = $1;
+                foreach my $read2_filename (@read_filenames) {
+                    if ( $read2_filename =~
+                        /^$directory\/$filename_stub\_2$file_extension$/ )
+                    {
+                        push @paired_files, $read2_filename;
+                        $pair_filenames{$read_filename} = $read2_filename;
+                    }
+                }
+            }
+        }
+        if ( @paired_files > 0 ) { @read_filenames = @paired_files; }
     }
-    if ( @nopaired_files > 0 ) { @read_filenames = @nopaired_files; }
 
     my $pm = new Parallel::ForkManager( scalar(@read_filenames) );
     $pm->set_max_procs($max_processes);
@@ -109,6 +127,75 @@ sub main {
     foreach my $read_filename (@read_filenames) {
 
         $pm->start and next;
+
+        if ($fastq) {
+
+            # Set up quality thresholds and characters
+            my $qual_low_char  = '!';
+            my $qual_high_char = 'I';
+            if ($illumina) {
+                $qual_low_char  = ';';
+                $qual_high_char = 'h';
+            }
+
+            # Detect input files
+            my $read1_in;
+            my $read2_in;
+            my $sample_name = $read_filename;
+            $sample_name =~ s/$directory\///;
+
+            open $read1_in, '<', "$directory/$read_filename"
+              or die "Can't open input file $read_filename!\n";
+
+            if ( defined $pair_filenames{$read_filename} ) {
+                $sample_name =~ s/\_1$file_extension//;
+                open $read2_in, '<', "$directory/$pair_filenames{$read_filename}"
+                  or die
+                  "Can't open input file $pair_filenames{$read_filename}!\n";
+            }
+            else {
+                $sample_name =~ s/$file_extension//;
+            }
+
+            open my $reads_file, '>', "$directory/$sample_name\.reads"
+              or die "Can't open reads file for FASTQ conversion!\n";
+
+            while (
+                my $pair_ref = load_fastq_pair(
+                    {
+                        read1_handle   => $read1_in,
+                        read2_handle   => $read2_in,
+                        qual_low_char  => $qual_low_char,
+                        qual_high_char => $qual_high_char,
+                        illumina       => $illumina,
+                    }
+                )
+              )
+            {
+                last if ( $pair_ref->{valid} == -1 );
+
+                print $reads_file "$pair_ref->{r1seq} $pair_ref->{r1qual}\n";
+            }
+            close $reads_file;
+            close $read1_in;
+            if ($read2_in) { close $read2_in; }
+
+            # Sort reads files
+
+            $read_filename = "$directory/$sample_name\.reads";
+            sort_reads_file(
+                {
+                    directory     => $directory,
+                    read_filename => $read_filename,
+                    sort_start    => length($site),
+                    read1_field   => 1
+                }
+            );
+
+            # Set up to load new reads files
+            $file_extension = '.reads';
+
+        }
 
         cluster_one_sample(
             {
@@ -119,6 +206,7 @@ sub main {
                 expected_tags     => $expected_tags,
                 quality_threshold => $quality_threshold,
                 read_threshold    => $read_threshold,
+                illumina          => $illumina,
             }
         );
         $pm->finish;
@@ -157,6 +245,7 @@ sub cluster_one_sample {
     my $expected_tags     = $arg_ref->{expected_tags};
     my $quality_threshold = $arg_ref->{quality_threshold};
     my $read_threshold    = $arg_ref->{read_threshold};
+    my $illumina          = $arg_ref->{illumina};
 
     my $first_unique;
     my $unique_hash;
@@ -165,12 +254,8 @@ sub cluster_one_sample {
     my @cluster;
 
     my $sample_name = $read_filename;
-    if ( $file_extension eq '.fastq' ) {
-        $sample_name =~ s/\_1$file_extension//;
-    }
-    else {
-        $sample_name =~ s/$file_extension//;
-    }
+    $sample_name =~ s/$file_extension//;
+    $sample_name =~ s/$directory\///;
 
     # This calculates how many bases required to uniquely ID
     # this number of tags (reverse of 4^(expected_tags))
@@ -179,42 +264,25 @@ sub cluster_one_sample {
     my $threshold_distance = ceil( ( log $expected_tags ) / ( log 4 ) );
     my @bases = qw{A C G T};
 
-    open my $out_file, '>', "$directory/$sample_name\.tags"
+    open my $out_file, '>', "$directory\/$sample_name\.tags"
       or die "Can't open $sample_name\.tags: $OS_ERROR!";
 
-    my $in1_file;
-    my $in2_file;
-    if ( $file_extension eq '.fastq' ) {
-        open $in1_file, '<', "$directory/$sample_name\_1$file_extension"
-          or die
-"Can't open Read 1 FASTQ file $sample_name\_1$file_extension: $OS_ERROR!\n";
-        open $in2_file, '<', "$directory/$sample_name\_2$file_extension"
-          or die
-"Can't open Read 2 FASTQ file $sample_name\_2$file_extension: $OS_ERROR!\n";
-    }
-    else {
-        open $in1_file, '<', "$directory/$sample_name$file_extension"
-          or die "Can't open $sample_name$file_extension: $OS_ERROR!";
-    }
+    open my $in_file, '<', "$directory/$sample_name$file_extension"
+      or die "Can't open $sample_name$file_extension: $OS_ERROR!";
 
-    my $first_read = get_read( $in1_file, $in2_file, $file_extension, $site );
+    my $first_read = get_read( $in_file, $site );
 
     if ( defined $first_read ) {
         $read_length = length $first_read->{r1s};
         $unique_hash =
-          get_unique( $in1_file, $in2_file, $file_extension, $site, $first_read,
-            $threshold_distance );
+          get_unique( $in_file, $site, $first_read, $threshold_distance );
         $first_unique = $unique_hash->{uniq};
         $first_read   = $unique_hash->{read};
         push @cluster, $first_unique;
     }
 
-    while (
-        $unique_hash = get_unique(
-            $in1_file, $in2_file,   $file_extension,
-            $site,     $first_read, $threshold_distance
-        )
-      )
+    while ( $unique_hash =
+        get_unique( $in_file, $site, $first_read, $threshold_distance ) )
     {
 
         # Exit if no good hash could be returned
@@ -245,10 +313,10 @@ sub cluster_one_sample {
         # the last unique has been processed)
         last if ( !defined $first_read );
     }
-    close $out_file or die "Couldn't close $sample_name\.tags: $OS_ERROR!\n";
+    close $out_file
+      or die "Couldn't close $sample_name\.tags: $OS_ERROR!\n";
 
-    close $in1_file;
-    if ( defined $in2_file ) { close $in2_file; }
+    close $in_file;
 
     return;
 }
@@ -287,53 +355,31 @@ sub compare_uniques {
 #############################################################################
 ### Name:       GET READ
 ### Function:   Process read line into read record
-### Parameters: Read 1 filehandle, read 2 filehandle, file extension,
-###             restriction site
+### Parameters: Read 1 filehandle, restriction site
 ### Returns:    Hash of read sequences and qualities
 #############################################################################
 
 sub get_read {
-    my ( $in1_file, $in2_file, $file_extension, $site ) = @_;
+    my ( $in_file, $site ) = @_;
 
     my $read1seq;
     my $read1qual;
     my $read2seq;
     my $read2qual;
-    my $header1;
-    my $header2;
+    my $seq_line;
 
-    if ( $file_extension eq '.fastq' ) {
-        $header1   = <$in1_file>;
-        $read1seq  = <$in1_file>;
-        $header2   = <$in1_file>;
-        $read1qual = <$in1_file>;
-        return if ( !( defined $header1 ) );
-        chomp $read1seq;
-        chomp $read1qual;
+    return if ( !( $seq_line = <$in_file> ) );
+    chomp $seq_line;
+    ( $read1seq, $read1qual, $read2seq, $read2qual ) = split / /, $seq_line;
 
-        if ( defined $in2_file ) {
-            $header1   = <$in2_file>;
-            $read2seq  = <$in2_file>;
-            $header2   = <$in2_file>;
-            $read2qual = <$in2_file>;
-            chomp $read2seq;
-            chomp $read2qual;
-        }
-    }
-    else {
-        my $seq_line;
-        return if ( !( $seq_line = <$in1_file> ) );
-        chomp $seq_line;
-        ( $read1seq, $read1qual, $read2seq, $read2qual ) = split / /, $seq_line;
-        if ( !defined $read2seq )  { $read2seq  = q{}; }
-        if ( !defined $read2qual ) { $read2qual = q{}; }
-    }
+    if ( !defined $read2seq )  { $read2seq  = q{}; }
+    if ( !defined $read2qual ) { $read2qual = q{}; }
 
     $read1qual =~ s/#/!/g;
     $read2qual =~ s/#/!/g;
 
     # Remove restriction site if present
-    if ( $site ne '' ) {
+    if ( $site ne '-' ) {
         $read1seq  = substr $read1seq,  length($site);
         $read1qual = substr $read1qual, length($site);
     }
@@ -349,17 +395,14 @@ sub get_read {
 #############################################################################
 ### Name:       GET UNIQUE
 ### Function:   Load in identical reads as one unique and check for quality
-### Parameters: Read 1 filehandle, read 2 filehandle, file extension,
-###             restriction site,
+### Parameters: Read 1 filehandle, restriction site,
 ###             first read for comparison,
 ###             threshold distance for comparison
 ### Returns:    Finished unique and first read of next unique
 #############################################################################
 
 sub get_unique {
-    my ( $in1_file, $in2_file, $file_extension, $site, $first_read,
-        $threshold_distance )
-      = @_;
+    my ( $in_file, $site, $first_read, $threshold_distance ) = @_;
 
     my $unique_ok = 0;
     my $new_read;
@@ -372,9 +415,7 @@ sub get_unique {
         push @{ $unique->{q} }, $first_read->{r1q};
         push @{ $unique->{prs}{ $first_read->{r2s} } }, $first_read->{r2q};
 
-        while ( $new_read =
-            get_read( $in1_file, $in2_file, $file_extension, $site ) )
-        {
+        while ( $new_read = get_read( $in_file, $site ) ) {
             last if ( $new_read->{r1s} ne $unique->{seq} );
 
             $unique->{count}++;
@@ -642,6 +683,8 @@ This documentation refers to RADtools version 1.1.
 =over 8
 
 =item RADtags -e <EXPECTED_TAGS> [options]
+
+=item RADtags -e <EXPECTED_TAGS> -z -s <SITE> [options]
 
 =item RADtags --help
 
