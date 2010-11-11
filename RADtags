@@ -15,6 +15,7 @@
 # 29/10/10 1.0.2 Tidy
 # 30/10/10 1.1 Load FASTQ format as well as reads format
 #              Strip restriction site off the start of reads
+# 11/11/10 1.1.1 Bug fixes for test suite - added verbose option
 
 #############################################################################
 ###
@@ -29,6 +30,7 @@ use English qw( -no_match_vars );
 use Getopt::Long qw(:config bundling no_auto_abbrev auto_version );
 use Pod::Usage;
 use POSIX qw{ceil};
+use Data::Dumper;
 
 use RADtools qw (load_fastq_pair sort_reads_file QUAL_OFFSET);
 
@@ -45,18 +47,19 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.0.2;    # Used by Getopt::Long to provide --version
-local $OUTPUT_AUTOFLUSH = 1;        # So reporting on progress works
+local $main::VERSION    = 1.1.1;    # Used by Getopt::Long to provide --version
+local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
-main(@ARGV) unless caller;          # So test suite can call script
+main(@ARGV) unless caller;        # So test suite can call script
 
 sub main {
 
     # Set up default options
 
-    my $help  = 0;
-    my $usage = 0;
-    my $man   = 0;
+    my $help    = 0;
+    my $usage   = 0;
+    my $man     = 0;
+    my $verbose = 0;
 
     my $file_extension    = '.reads';
     my $directory         = '.';
@@ -70,9 +73,10 @@ sub main {
 
     my $options_okay = GetOptions(
 
-        'help|h'  => \$help,
-        'usage|u' => \$usage,
-        'man'     => \$man,
+        'help|h'    => \$help,
+        'usage|u'   => \$usage,
+        'man'       => \$man,
+        'verbose|v' => \$verbose,
 
         'file_extension|f=s' => \$file_extension,
         'directory|d=s'      => \$directory,
@@ -84,21 +88,34 @@ sub main {
         'quality_threshold|q=i' => \$quality_threshold,
         'read_threshold|r=i'    => \$read_threshold,
         'max_processes|m=i'     => \$max_processes,
-    ) or pod2usage( -verbose => 0 );
+    ) or pod2usage( -exitval => 3, -verbose => 0 );
 
-    pod2usage( -verbose => 0 ) if $usage;
-    pod2usage( -verbose => 1 ) if $help;
-    pod2usage( -verbose => 2 ) if $man;
+    pod2usage( -exitval => 4, -verbose => 0 ) if $usage;
+    pod2usage( -exitval => 5, -verbose => 1 ) if $help;
+    pod2usage( -exitval => 6, -verbose => 2 ) if $man;
 
-    pod2usage( -verbose => 0 ) if ( $expected_tags == -1 );
+    pod2usage( -exitval => 7, -verbose => 0 ) if ( $expected_tags == -1 );
 
-    pod2usage( -verbose => 0 ) if ( $fastq && $site eq '-' );
+    pod2usage( -exitval => 8, -verbose => 0 ) if ( $fastq && $site eq '-' );
 
-    opendir( my $readdir, $directory );
+    die "Please specify a positive value for expected tags (-e)\n"
+      if ( $expected_tags <= 0 );
+
+    die("Site (-s) should only contain AGCT\n")
+      if ( ( $site ne '-' ) && ($site ne '') && ( $site !~ /^[ACGT]+$/ ) );
+
+    if (($fastq) && ($file_extension eq '.reads')) {
+        $file_extension = '.fastq';
+    }
+
+    opendir( my $readdir, $directory )
+      or die "Can't open directory $directory!\n";
+    if ($verbose) { print "Processing directory $directory ...\n"; }
     my @read_filenames = grep { /($file_extension)$/ } readdir $readdir;
+
     if ( @read_filenames == 0 ) {
         die
-"No read files found. Please specify -f. You may need to specify the read file directory using -d.\n";
+"No read files found with extension '$file_extension'. Please specify -f. You may need to specify the read file directory using -d.\n";
     }
     closedir $readdir;
 
@@ -106,13 +123,13 @@ sub main {
     if ($fastq) {
         my @paired_files;
         foreach my $read_filename (@read_filenames) {
-            if ( $read_filename =~ /^$directory\/(.+)\_1\$file_extension$/ ) {
+            if ( $read_filename =~ /^(.+)\_1$file_extension$/ ) {
                 my $filename_stub = $1;
                 foreach my $read2_filename (@read_filenames) {
                     if ( $read2_filename =~
-                        /^$directory\/$filename_stub\_2$file_extension$/ )
+                        /^$filename_stub\_2$file_extension$/ )
                     {
-                        push @paired_files, $read2_filename;
+                        push @paired_files, $read_filename;
                         $pair_filenames{$read_filename} = $read2_filename;
                     }
                 }
@@ -126,8 +143,10 @@ sub main {
 
     foreach my $read_filename (@read_filenames) {
 
-        $pm->start and next;
+        next if ( $read_filename =~ /^\./ );
 
+        $pm->start and next;
+        if ($verbose) { print "Processing $read_filename...\n"; }
         if ($fastq) {
 
             # Set up quality thresholds and characters
@@ -149,7 +168,8 @@ sub main {
 
             if ( defined $pair_filenames{$read_filename} ) {
                 $sample_name =~ s/\_1$file_extension//;
-                open $read2_in, '<', "$directory/$pair_filenames{$read_filename}"
+                open $read2_in, '<',
+                  "$directory/$pair_filenames{$read_filename}"
                   or die
                   "Can't open input file $pair_filenames{$read_filename}!\n";
             }
@@ -174,7 +194,14 @@ sub main {
             {
                 last if ( $pair_ref->{valid} == -1 );
 
-                print $reads_file "$pair_ref->{r1seq} $pair_ref->{r1qual}\n";
+                print $reads_file "$pair_ref->{r1seq} $pair_ref->{r1qual}";
+
+                if (   ( defined $pair_ref->{r2seq} )
+                    && ( $pair_ref->{r2seq} ne '' ) )
+                {
+                    print $reads_file " $pair_ref->{r2seq} $pair_ref->{r2qual}";
+                }
+                print $reads_file "\n";
             }
             close $reads_file;
             close $read1_in;
@@ -183,11 +210,12 @@ sub main {
             # Sort reads files
 
             $read_filename = "$directory/$sample_name\.reads";
+            my $sort_start = length($site)>1 ? length($site) : 1;
             sort_reads_file(
                 {
                     directory     => $directory,
                     read_filename => $read_filename,
-                    sort_start    => length($site),
+                    sort_start    => $sort_start,
                     read1_field   => 1
                 }
             );
@@ -206,13 +234,12 @@ sub main {
                 expected_tags     => $expected_tags,
                 quality_threshold => $quality_threshold,
                 read_threshold    => $read_threshold,
-                illumina          => $illumina,
             }
         );
         $pm->finish;
     }
     $pm->wait_all_children;
-
+    if ($verbose) { print "Done\n"; }
     return;
 }
 
@@ -245,7 +272,6 @@ sub cluster_one_sample {
     my $expected_tags     = $arg_ref->{expected_tags};
     my $quality_threshold = $arg_ref->{quality_threshold};
     my $read_threshold    = $arg_ref->{read_threshold};
-    my $illumina          = $arg_ref->{illumina};
 
     my $first_unique;
     my $unique_hash;
@@ -271,7 +297,6 @@ sub cluster_one_sample {
       or die "Can't open $sample_name$file_extension: $OS_ERROR!";
 
     my $first_read = get_read( $in_file, $site );
-
     if ( defined $first_read ) {
         $read_length = length $first_read->{r1s};
         $unique_hash =
@@ -280,7 +305,9 @@ sub cluster_one_sample {
         $first_read   = $unique_hash->{read};
         push @cluster, $first_unique;
     }
+    else { return; }
 
+    my $count = 0;
     while ( $unique_hash =
         get_unique( $in_file, $site, $first_read, $threshold_distance ) )
     {
@@ -313,6 +340,11 @@ sub cluster_one_sample {
         # the last unique has been processed)
         last if ( !defined $first_read );
     }
+
+    # Process last cluster
+    find_cluster_variants( \@cluster, $read_length, $quality_threshold,
+        $read_threshold, $out_file );
+
     close $out_file
       or die "Couldn't close $sample_name\.tags: $OS_ERROR!\n";
 
@@ -380,6 +412,10 @@ sub get_read {
 
     # Remove restriction site if present
     if ( $site ne '-' ) {
+        if ( length($site) >= length($read1seq) ) {
+            print "Site $site is longer than read $read1seq; aborting\n";
+            return;
+        }
         $read1seq  = substr $read1seq,  length($site);
         $read1qual = substr $read1qual, length($site);
     }
@@ -676,7 +712,7 @@ RADtags - Identifies RAD tags in Illumina reads from RAD samples
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.1.
+This documentation refers to RADtools version 1.1.1.
 
 =head1 SYNOPSIS
 
@@ -722,6 +758,18 @@ Name of directory containing tags files (ie prefix of pools filename if using RA
 
 Estimate of number of tags expected in sample (required)
 
+=item B<-z, --fastq>
+
+Load FASTQ data. -s must also be specified. By default, loads files ending with '.fastq', unless -f is specified. If loading paired end data, files should be named 'samplename_1.fastq' and 'samplename_2.fastq' for each sample; otherwise, the files will be loaded as separate samples.
+
+=item B<-s, --site>
+
+Restriction site overhang sequence. If this sequence is present at the start of each read, it will be removed. By default, nothing is removed.
+
+=item B<-i, --illumina>
+
+Load data in fastq-illumina format, rather than fastq-sanger format. Only applies to FASTQ input, not reads input. If specified, qualities will be converted to fastq-sanger format.
+
 =item B<-m, --max_processes>
 
 Maximum number of processes to run (default 1). As one process is required for each sample, increasing --max_processes is highly recommended if more cores are available.
@@ -733,10 +781,6 @@ Only consider bases with qualities above this threshold when comparing unique se
 =item B<-r, --read_threshold>
 
 Reject any tags with counts lower than this threshold. Default 2, ie throw away all tags with just one read associated with them, which are very likely to be due to sequencing error.
-
-=item B<-s, --site>
-
-Restriction site sequence to be removed from the start of the read. Default empty string, ie nothing will be removed. 
 
 =back
 

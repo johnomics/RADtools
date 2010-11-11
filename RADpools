@@ -18,10 +18,11 @@
 # 08/09/10 1.0.1 Minor bug fixes
 # 29/10/10 1.0.2 Accept at most one N in restriction enzyme, MID;
 #                Don't use species name in output filename
-# 30/10/10 1.1 Change species argument to directory argument
-#              Output restriction site sequence
-#              Add option to output FASTQ format
-#              Load and output fastq-sanger qualities
+# 30/10/10 1.1   Change species argument to directory argument
+#                Output restriction site sequence
+#                Add option to output FASTQ format
+#                Load and output fastq-sanger qualities
+#  4/11/10 1.1.1 Improved robustness following implementation of test suite
 
 #############################################################################
 ###
@@ -35,8 +36,9 @@ use warnings;
 use English qw( -no_match_vars );
 use Getopt::Long qw( :config bundling no_auto_abbrev auto_version );
 use Pod::Usage;
+use File::Basename;
 use File::Copy;
-use Data::Dumper;
+use Cwd;
 
 use RADtools qw(load_fastq_pair sort_reads_file QUAL_OFFSET);
 
@@ -53,10 +55,10 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.1;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.1.1;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
-main(@ARGV) unless caller;        # So test suite can call script
+main(@ARGV) unless caller();      # So test suite can call script
 
 sub main {
 
@@ -102,15 +104,23 @@ sub main {
         'trim|t=i'     => \$trim,
         'fuzzy_MIDs|f' => \$fuzzy_MIDs,
 
-    ) or pod2usage( -verbose => 0 );
+    ) or pod2usage( -exitval => 3, -verbose => 0 );
 
-    pod2usage( -verbose => 0 ) if $usage;
-    pod2usage( -verbose => 1 ) if $help;
-    pod2usage( -verbose => 2 ) if $man;
+    pod2usage( -exitval => 4, -verbose => 0 ) if $usage;
+    pod2usage( -exitval => 5, -verbose => 1 ) if $help;
+    pod2usage( -exitval => 6, -verbose => 2 ) if $man;
 
     # Validate options
-    pod2usage( -verbose => 0 ) if ( $read1_file eq q{} );
-    pod2usage( -verbose => 0 ) if ( $directory  eq q{} );
+    pod2usage( -exitval => 7, -verbose => 0 ) if ( $read1_file eq q{} );
+    pod2usage( -exitval => 8, -verbose => 0 ) if ( $directory  eq q{} );
+
+    die "Quality threshold must be between 0 and 40\n" if (($quality_threshold <0) || ($quality_threshold > 40));
+
+
+    # If directory is ., get basename of current directory
+    if ( $directory eq '.' ) {
+        $directory = basename(getcwd);
+    }
 
     # Sugar: strip .pools from directory argument if it has been added
     $directory =~ s/\.pools$//;
@@ -125,104 +135,16 @@ sub main {
     my $mid_length      = 0;
     my %mid_pools       = ();
     my %pool_handles    = ();
-    if ($verbose) { print "Loading pools and MIDs...\n"; }
 
-    if ( $directory ne q{} ) {
+    load_pools_and_mids( \%mid_pools, $directory, $verbose, $fuzzy_MIDs );
 
-        # Load pools from file into an array
-        my $pool_file = $directory . '.pools';
-        open my $poolhandle, '<', $pool_file
-          or die "Couldn't open '$pool_file': $OS_ERROR\n";
-        my @pools = <$poolhandle>;
-        close $poolhandle or die "Can't close $pool_file: $OS_ERROR\n";
-
-        if ( !-d "./$directory" ) {
-            mkdir "./$directory"
-              or die
-"Can't create directory for $directory output files: $OS_ERROR!\n";
-        }
-
-        # Load MIDs for all pools
-        foreach my $pool_line (@pools) {
-            chomp $pool_line;
-
-            my @pool_mid_list = split / /, $pool_line;
-
-            my $pool_name = shift @pool_mid_list;
-
-            # Load MIDs into array and set up hash of MIDs for pool lookup
-
-            foreach my $mid (@pool_mid_list) {
-                $mid_length = length $mid;
-                if ( !$fuzzy_MIDs ) {
-                    push @{ $mid_pools{$mid} }, $pool_name;
-                }
-                else {
-                    for my $i ( 1 .. $mid_length ) {
-                        for my $base (qw{A C G T N}) {
-                            my $fuzzycode  = $mid;
-                            my $prebase_i  = $i - 1;
-                            my $postbase_i = $mid_length - $i;
-                            $fuzzycode =~ s{^([ACGT]{$prebase_i})
-                            ([ACGT])
-                            ([ACGT]{$postbase_i})$}
-                            {$1$base$3}xms;
-                            push @{ $mid_pools{$fuzzycode} }, $pool_name;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    else {
-        die 'Please provide the name of your pools file using the -d option';
-    }
-
-    # Collapse lists of pools for each MID into unique, sorted, string
-    foreach my $mid ( keys %mid_pools ) {
-        my @pool_list = sort @{ $mid_pools{$mid} };
-        my $seen      = q{};
-
-        # Get unique elements of list
-        @pool_list = grep { ( $_ ne $seen ) && ( ($seen) = $_ ) } @pool_list;
-
-        if ( ( !$fuzzy_MIDs ) && ( @pool_list > 1 ) ) {
-            delete $mid_pools{$mid};
-        }
-        else {
-
-            my $pool_string = q{};
-
-            # Collapse list of pools
-            foreach my $pool (@pool_list) {
-                $pool_string = $pool_string . $pool . '.';
-            }
-
-            # Get rid of trailing /
-            chop $pool_string;
-            $mid_pools{$mid} = $pool_string;
-
-            open $pool_handles{$pool_string}, '>',
-              "./$directory/$pool_string\.reads"
-              or die "Can't open output file for $pool_string: $OS_ERROR\n";
-        }
-    }
+    $mid_length =
+      open_read_files( \%mid_pools, \%pool_handles, $directory, $fuzzy_MIDs );
 
     # Make fuzzy list of restriction enzyme sites
 
     my %fuzzy_res_sites = ();
-    for my $i ( 1 .. $res_site_length ) {
-        for my $base (qw{A C G T N}) {
-            my $fuzzyseq   = $res_site;
-            my $prebase_i  = $i - 1;
-            my $postbase_i = $res_site_length - $i;
-            $fuzzyseq =~ s{^([ACGT]{$prebase_i})
-               ([ACGT])
-               ([ACGT]{$postbase_i})$}
-               {$1$base$3}xms;
-            $fuzzy_res_sites{$fuzzyseq} = $res_site;
-        }
-    }
+    make_fuzzy_seqs( $res_site, \%fuzzy_res_sites );
 
 #############################################################################
 ###
@@ -263,9 +185,22 @@ sub main {
     open my $invalid_handle, '>', $invalid_file
       or die "Can't open $invalid_file: $OS_ERROR";
 
-    print {$invalid_handle}
-"Input files: $read1_file, $read2_file; Directory: $directory, Enzyme site: $res_site; Trim length: $trim; Quality threshold: $quality_threshold\n"
+    print {$invalid_handle} "Input files: $read1_file"
       or die "Can't write to $invalid_file: $OS_ERROR\n";
+
+    if ( $read2_file ne q{} ) { print {$invalid_handle} ", $read2_file"; }
+
+    print {$invalid_handle}
+"; Directory: $directory, Enzyme site: $res_site; Trim length: $trim; Quality threshold: $quality_threshold; Processes: $max_processes; Sanger? ";
+
+    if   ($sanger) { print {$invalid_handle} "Yes;" }
+    else           { print {$invalid_handle} "No;" }
+
+    print {$invalid_handle} " Fuzzy MIDs? ";
+    if   ($fuzzy_MIDs) { print {$invalid_handle} "Yes;" }
+    else               { print {$invalid_handle} "No;" }
+
+    print {$invalid_handle} "\n";
 
     # Load RAD sequences into hash of pools with counts for identical sequences
 
@@ -295,11 +230,12 @@ sub main {
         if ( ($verbose) && ( $record_count_total % 100_000 == 0 ) ) {
             printf
 "OK: %8d | FASTQ: %8d | RAD: %8d | Res: %8d | MID: %8d | Short: %8d\n",
-              $record_count_valid,  $non_fastq_count, $wrong_rad_format_count,
+              $record_count_valid, $non_fastq_count,
+              $wrong_rad_format_count,
               $wrong_ressite_count, $wrong_mid_count, $short_sequence_count;
         }
 
-        if ( !$pair_ref->{valid}) {
+        if ( !$pair_ref->{valid} ) {
             print {$invalid_handle}
 "Invalid FASTQ record: $pair_ref->{r1name} $pair_ref->{r1seq} $pair_ref->{r1qual}\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
@@ -308,12 +244,13 @@ sub main {
         }
 
         # Set trim to length of RAD sequence if not previously set
-        if ( $trim == 0 ) {
-            $trim = ( length $pair_ref->{r1seq} ) - $mid_length;
+        my $tag_length = (length $pair_ref->{r1seq}) - $mid_length;
+        if (( $trim <= 0 ) or ($trim > $tag_length)) {
+            $trim = $tag_length;
         }
 
-        # Find any point where Q<20 and strip off sequence following this point
-        # Illumina data in Sanger FASTQ format
+        # Find any point where Q<threshold and
+        # strip off sequence following this point
         my $qual_threshold_char = chr( $quality_threshold + QUAL_OFFSET );
         if ( $pair_ref->{r1qual} =~ m{(\A[$qual_threshold_char-I]+)}xms ) {
             $quality_tail = $1;
@@ -417,7 +354,8 @@ sub main {
     }
 
     foreach my $pool ( keys %pool_handles ) {
-        close $pool_handles{$pool} or die "Can't close pool files: $OS_ERROR\n";
+        close $pool_handles{$pool}
+          or die "Can't close pool files: $OS_ERROR\n";
     }
 
     if ($verbose) { print "Sorting pooled reads...\n"; }
@@ -454,7 +392,7 @@ sub main {
                 open $fastq2_file, '>', "./$directory/$pool_id\_2\.fastq";
             }
             else {
-                open $fastq1_file, '>', "./$directory/$pool_id\.fastq";                
+                open $fastq1_file, '>', "./$directory/$pool_id\.fastq";
             }
 
             open my $read_file, '<', $read_filename;
@@ -514,6 +452,137 @@ sub main {
 ###
 #############################################################################
 
+sub make_fuzzy_seqs {
+    my ( $seq, $fuzzy_list_ref, $name ) = @_;
+    my $seq_length = length $seq;
+    for my $i ( 1 .. $seq_length ) {
+        for my $base (qw{A C G T N}) {
+            my $fuzzyseq   = $seq;
+            my $prebase_i  = $i - 1;
+            my $postbase_i = $seq_length - $i;
+            $fuzzyseq =~ s{^([ACGT]{$prebase_i})
+           ([ACGT])
+           ([ACGT]{$postbase_i})$}
+           {$1$base$3}xms;
+            if ( defined $name ) {
+                push @{ $fuzzy_list_ref->{$fuzzyseq} }, $name;
+            }
+            else {
+                $fuzzy_list_ref->{$fuzzyseq} = $seq;
+            }
+        }
+    }
+    return;
+}
+
+sub load_pools_and_mids {
+    my ( $mid_pools_ref, $directory, $verbose, $fuzzy_MIDs ) = @_;
+
+    if ( $directory ne q{} ) {
+
+        # Load pools from file into an array
+        my $pool_file = $directory . '.pools';
+        open my $poolhandle, '<', $pool_file
+          or die "Couldn't open '$pool_file': $OS_ERROR\n";
+        if ($verbose) { print "Loading pools from $pool_file...\n"; }
+        my @pools = <$poolhandle>;
+        close $poolhandle or die "Can't close $pool_file: $OS_ERROR\n";
+
+        if ( !-d "./$directory" ) {
+            mkdir "./$directory"
+              or die
+"Can't create directory for $directory output files: $OS_ERROR!\n";
+            if ($verbose) { print "Created ./$directory...\n"; }
+
+        }
+
+        my %pool_names;
+
+        # Load MIDs for all pools
+        foreach my $pool_line (@pools) {
+            chomp $pool_line;
+
+            next if ( $pool_line eq '' );
+
+            my @pool_mid_list = split /\s+/, $pool_line;
+            if ( @pool_mid_list < 2 ) {
+                print STDERR
+"Faulty pool: $pool_line - must have at least a name and one MID separated by whitespace\n";
+                next;
+            }
+
+            my $pool_name = shift @pool_mid_list;
+
+            if ( defined $pool_names{$pool_name} ) {
+                print STDERR
+                  "Faulty pool: $pool_name - pool names must be unique\n";
+                next;
+            }
+            $pool_names{$pool_name}++;
+
+            # Load MIDs into array and set up hash of MIDs for pool lookup
+
+            foreach my $mid (@pool_mid_list) {
+                if ( $mid !~ /[ACGT]+/ ) {
+                    print STDERR
+"Faulty MID : $pool_name $mid - MIDs must contain only ACGT\n";
+                    next;
+                }
+                if ( !$fuzzy_MIDs ) {
+                    push @{ $mid_pools_ref->{$mid} }, $pool_name;
+                }
+                else {
+                    make_fuzzy_seqs( $mid, $mid_pools_ref, $pool_name );
+                }
+            }
+        }
+    }
+    else {
+        die 'Please provide the name of your pools file using the -d option';
+    }
+    return;
+}
+
+sub open_read_files {
+    my ( $mid_pools_ref, $pool_handles_ref, $directory, $fuzzy_MIDs ) = @_;
+
+    my $mid_length = 0;
+
+    # Collapse lists of pools for each MID into unique, sorted, string
+    foreach my $mid ( keys %{$mid_pools_ref} ) {
+        $mid_length = length $mid;
+        my @pool_list = sort @{ $mid_pools_ref->{$mid} };
+        my $seen      = q{};
+
+        # Get unique elements of list
+        @pool_list =
+          grep { ( $_ ne $seen ) && ( ($seen) = $_ ) } @pool_list;
+
+        if ( ( !$fuzzy_MIDs ) && ( @pool_list > 1 ) ) {
+            delete $mid_pools_ref->{$mid};
+        }
+        else {
+
+            my $pool_string = q{};
+
+            # Collapse list of pools
+            foreach my $pool (@pool_list) {
+                $pool_string = $pool_string . $pool . '.';
+            }
+
+            # Get rid of trailing .
+            chop $pool_string;
+            $mid_pools_ref->{$mid} = $pool_string;
+
+            open $pool_handles_ref->{$pool_string}, '>',
+              "./$directory/$pool_string\.reads"
+              or die "Can't open output file for $pool_string: $OS_ERROR\n";
+        }
+    }
+
+    return $mid_length;
+}
+
 #############################################################################
 ### Name:       GET TIMESTAMP
 ### Function:   gets and formats the current time
@@ -534,6 +603,9 @@ sub get_timestamp {
     return $year . $mon . $mday . '_' . $hour . $min . $sec;
 }
 
+# return true;
+1;
+
 __END__
 
 #############################################################################
@@ -548,7 +620,7 @@ RADpools - Take raw Illumina RAD reads and create read files for a set of pools
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.1.
+This documentation refers to RADtools version 1.1.1.
 
 =head1 SYNOPSIS
 
