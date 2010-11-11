@@ -1,3 +1,11 @@
+1.1.1
+  RADpools
+    - Bug fixes after adding test suite
+  RADtags
+    - Loads FASTQ format with -z option
+    - New option: -i. Converts Illumina qualities to Sanger qualities in FASTQ data.
+    - New option: -v. Verbose - outputs messages about samples processed.
+    - Bug fixes after adding test suite
 1.1
   RADpools
     - New option: -s. Loads reads with Sanger qualities.

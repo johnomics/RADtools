@@ -1,11 +1,11 @@
 RADtools
-Version 1.1
-November 1 2010
+Version 1.1.1
+November 11 2010
 John Davey john.davey@ed.ac.uk
 
 Tools for processing RAD Sequencing Illumina reads. See RADmanual for more details.
 
-Installation: Requires Perl 5.10 and CPAN module Parallel::ForkManager. No compilation required.
+Installation: Requires Perl 5.10 and CPAN module Parallel::ForkManager. No compilation required. Add RADtools.pm directory to @INC.
 
 Wiki: https://www.wiki.ed.ac.uk/display/RADSequencing/
 Mailing list: rad-sequencing@jiscmail.ac.uk
