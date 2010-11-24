@@ -104,7 +104,7 @@ sub main {
     my @individuals;
     while ( my $pools_line = <$pools_file> ) {
         chomp $pools_line;
-        my ( $name, $mid ) = split / /, $pools_line;
+        my ( $name, $mid ) = split /\s+/, $pools_line;
         push @individuals, $name;
     }
 
