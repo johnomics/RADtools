@@ -18,6 +18,8 @@
 # 29/10/10 1.0.2 Don't look for species name in input files
 # 30/10/10 1.1   Load Sanger qualities, not Illumina
 #                Load individuals from pools file and keep in this order
+# 16/02/11 1.2   Produces R-compatible TSV output format; add -o option
+#                to produce old output
 
 #############################################################################
 ###
@@ -54,10 +56,11 @@ sub main {
     my $end_tagfiles = '.tags';
     my $directory    = abs_path;
 
-    my $verbose   = 0;
-    my $snpsout   = 0;
-    my $qualsout  = 0;
-    my $fragments = 0;
+    my $verbose    = 0;
+    my $snpsout    = 0;
+    my $qualsout   = 0;
+    my $fragments  = 0;
+    my $old_output = 0;
 
     my $tag_count_threshold = 0;
     my $hamming_threshold   = 0;
@@ -73,10 +76,11 @@ sub main {
         'end_tagfiles|e=s' => \$end_tagfiles,
         'directory|d=s'    => \$directory,
 
-        'verbose|v'   => \$verbose,
-        'snpsout|o'   => \$snpsout,
-        'qualsout|q'  => \$qualsout,
-        'fragments|f' => \$fragments,
+        'verbose|v'    => \$verbose,
+        'snpsout|s'    => \$snpsout,
+        'qualsout|q'   => \$qualsout,
+        'fragments|f'  => \$fragments,
+        'old_output|o' => \$old_output,
 
         'tag_count_threshold|t=i' => \$tag_count_threshold,
         'mismatches|m=i'          => \$hamming_threshold,
@@ -125,7 +129,7 @@ sub main {
     );
 
     if ($verbose) {
-        print scalar( keys %tag_clusters )
+        print STDERR scalar( keys %tag_clusters )
           . ' clusters found from '
           . scalar( keys %tags )
           . " tags\n"
@@ -144,34 +148,48 @@ sub main {
     );
 
     if ( $verbose && !$include_singletons ) {
-        print scalar( keys %tag_clusters )
+        print STDERR scalar( keys %tag_clusters )
           . ' clusters found from '
           . scalar( keys %tags )
           . " tags after tags found in only one individual removed\n";
     }
 
-    foreach my $tag_count ( sort { $a <=> $b } keys %cluster_summary ) {
-        print "$tag_count $cluster_summary{$tag_count}{count}\n";
+    if ( !$old_output ) {
+        output_markers(
+            {
+                cluster_summary => \%cluster_summary,
+                individuals     => \@individuals,
+                qualsout        => $qualsout,
+                snpsout         => $snpsout,
+                fragments       => $fragments
+            }
+        );
+    }
+    else {
+        foreach my $tag_count ( sort { $a <=> $b } keys %cluster_summary ) {
+            print "$tag_count $cluster_summary{$tag_count}{count}\n";
 
-        foreach my $seg_pattern (
-            sort
-            keys %{ $cluster_summary{$tag_count}{segs} }
-          )
-        {
-            print_seg_tags(
-                {
-                    seg_pattern => $seg_pattern,
-                    seg_tags =>
-                      $cluster_summary{$tag_count}{segs}{$seg_pattern},
-                    ind       => \@individuals,
-                    qualsout  => $qualsout,
-                    snpsout   => $snpsout,
-                    fragments => $fragments,
-                }
-            );
-            print "\n";
+            foreach my $seg_pattern (
+                sort
+                keys %{ $cluster_summary{$tag_count}{segs} }
+              )
+            {
+                print_seg_tags(
+                    {
+                        seg_pattern => $seg_pattern,
+                        seg_tags =>
+                          $cluster_summary{$tag_count}{segs}{$seg_pattern},
+                        ind       => \@individuals,
+                        qualsout  => $qualsout,
+                        snpsout   => $snpsout,
+                        fragments => $fragments,
+                    }
+                );
+                print "\n";
+            }
         }
     }
+
     return;
 }
 
@@ -227,7 +245,7 @@ sub generate_tag_clusters {
 
         my %cluster;
 
-        if ($verbose) { print "Loading tags from $individual...\n"; }
+        if ($verbose) { print STDERR "Loading tags from $individual...\n"; }
         while ( my $tag_line = <$tag_file> ) {
             chomp $tag_line;
 
@@ -499,8 +517,8 @@ sub summarise_tag_clusters {
                 my $individual_present =
                   defined(
                     $clus_ref->{$tag_cluster}{$tag_sequence}{$individual} )
-                  ? 1
-                  : 0;
+                  ? "1"
+                  : "-";
                 $seg_pattern .= $individual_present;
             }
 
@@ -533,10 +551,7 @@ sub summarise_tag_clusters {
 
         my @sorted_alleles;
         $seg_pattern = q{};
-        foreach
-          my $seg_pattern_ref ( sort { $a->{seg_pattern} <=> $b->{seg_pattern} }
-            @seg_patterns )
-        {
+        foreach my $seg_pattern_ref ( sort @seg_patterns ) {
             push @sorted_alleles, $seg_pattern_ref;
             $seg_pattern .= $seg_pattern_ref->{seg_pattern} . q{ };
         }
@@ -546,6 +561,59 @@ sub summarise_tag_clusters {
           \@sorted_alleles;
     }
     return;
+}
+
+#############################################################################
+### Name:       OUTPUT MARKERS
+### Function:   Output all markers in TSV format
+### Parameters: cluster_summary - all marker data
+###             individuals     - names of samples
+###             qualsout        - if set, output qualities
+###             snpsout         - if set, output SNPs
+###             fragments       - if set, output fragment counts, not reads
+### Returns:    nothing (writes to STDOUT)
+#############################################################################
+
+sub output_markers {
+    my ($arg_ref) = @_;
+
+    my $clusters_ref    = $arg_ref->{cluster_summary};
+    my $individuals_ref = $arg_ref->{individuals};
+    my $qualsout        = $arg_ref->{qualsout};
+    my $snpsout         = $arg_ref->{snpsout};
+    my $fragments       = $arg_ref->{fragments};
+
+    my $cluster_id = 0;
+    print "ClusterID\tClusterAlleles\tSegPattern\tAllele";
+    map { print "\t$_"; } @{$individuals_ref};
+    print "\n";
+    foreach my $alleles_at_locus ( sort { $a <=> $b } keys %{$clusters_ref} ) {
+        foreach my $seg_pattern (
+            sort keys %{ $clusters_ref->{$alleles_at_locus}{segs} } )
+        {
+            foreach my $locus_ref (
+                @{
+                    $clusters_ref->{$alleles_at_locus}{segs}{$seg_pattern}{tags}
+                }
+              )
+            {
+                $cluster_id++;
+                foreach my $allele_ref ( @{$locus_ref} ) {
+                    print
+"$cluster_id\t$alleles_at_locus\t$allele_ref->{seg_pattern}\t$allele_ref->{sequence}";
+                    foreach my $individual ( @{$individuals_ref} ) {
+
+                        my $count =
+                            $fragments
+                          ? $allele_ref->{individuals}{$individual}{unique}
+                          : $allele_ref->{individuals}{$individual}{count};
+                        print $count ? "\t$count" : "\tNA";
+                    }
+                    print "\n";
+                }
+            }
+        }
+    }
 }
 
 #############################################################################
@@ -584,8 +652,10 @@ sub print_seg_tags {
         }
         else {
             print $ind;
-            if ( ( length $ind ) < 7 ) { print q{ } x ( 7 - ( length $ind ) ); }
-            else                       { print q{ }; }
+            if ( ( length $ind ) < 7 ) {
+                print q{ } x ( 7 - ( length $ind ) );
+            }
+            else { print q{ }; }
         }
     }
     print "\n";
@@ -801,7 +871,7 @@ Name of directory containing tags files (ie prefix of pools filename if using RA
 
 Output progress messages and summary statistics (default off)
 
-=item B<-o, --snpsout>
+=item B<-s, --snpsout>
 
 Output SNPs for clusters with more than one tag (default off)
 
@@ -824,6 +894,10 @@ Two tags with this number of mismatches or less will be clustered together  (def
 =item B<-i, --include_singletons>
 
 Include tags present in only one individual (default off)
+
+=item B<-o, --old_output>
+
+Produces old output format, now deprecated (default off)
 
 =back
 
