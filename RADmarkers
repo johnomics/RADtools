@@ -40,7 +40,7 @@ use RADtools qw(get_pools_filename QUAL_OFFSET);
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.1;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.2;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -827,7 +827,7 @@ RADmarkers - generates candidate markers from RAD tags across many individuals
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.1.
+This documentation refers to RADtools version 1.2.
 
 =head1 SYNOPSIS
 

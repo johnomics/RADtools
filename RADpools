@@ -23,6 +23,7 @@
 #                Add option to output FASTQ format
 #                Load and output fastq-sanger qualities
 #  4/11/10 1.1.1 Improved robustness following implementation of test suite
+# 16/02/11 1.2   New RADmarkers output; no changes to RADpools
 
 #############################################################################
 ###
@@ -55,7 +56,7 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.1.1;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.2;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller();      # So test suite can call script
@@ -620,7 +621,7 @@ RADpools - Take raw Illumina RAD reads and create read files for a set of pools
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.1.1.
+This documentation refers to RADtools version 1.2.
 
 =head1 SYNOPSIS
 

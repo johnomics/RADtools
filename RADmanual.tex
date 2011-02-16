@@ -1,6 +1,6 @@
 \documentclass[a4paper]{article}
 
-\title{RADtools: Software for RAD Sequencing, Version 1.1.1}
+\title{RADtools: Software for RAD Sequencing, Version 1.2}
 \author{John Davey\\{\tt john.davey@ed.ac.uk}}
 
 \begin{document}
@@ -276,7 +276,7 @@ The tool will output the tags to standard output. To save the output, pipe it to
     
     Output status messages and summary statistics during run.
     
-    \item \verb|-o, --snpsout|
+    \item \verb|-s, --snpsout|
     
     Output SNPs for clusters containing more than one tag.
     
@@ -305,6 +305,11 @@ The tool will output the tags to standard output. To save the output, pipe it to
     \item \verb|-i, --include_singletons|
     
     Tags that are present in only one pool are rejected by default, as they are likely to be errors and unlikely to be very useful. Set this option to include these tags.
+    
+    \item \verb|-o, --old_output|
+    
+    Produces the older output format, now deprecated.
+    
     
 \end{itemize}
 
@@ -339,7 +344,7 @@ Running RADMIDs with no options will generate all 5bp MIDs with 3bp difference b
 
 \section{Output formats}
 
-At present, the RADtools use a number of ad hoc text output formats suitable for hacking with Unix tools. This situation should improve in the near future.
+At present, the RADtools use a number of ad hoc text output formats suitable for hacking with Unix tools. RADmarkers output can now be loaded directly into R or Excel. Suggestions for improvements are welcome.
 
 \subsection{RADpools}
 
@@ -382,6 +387,27 @@ Tags are clustered together by sequence similarity. Clusters are separated by em
 
 
 \subsection{RADmarkers}
+
+The RADmarkers output is in tab separated values (tsv) format, suitable for loading in R or Excel. Each record represents a particular allele and has the following fields:
+
+\begin{itemize}
+    \item \verb|ClusterID| - unique ID for a cluster of alleles
+    \item \verb|ClusterAlleles| - the number of alleles in this cluster
+    \item \verb|SegPattern| - the presence/absence segregation pattern of this allele across all individuals
+    \item \verb|Allele| - the sequence of the allele
+\end{itemize}
+
+Following these fields, the read or fragment counts for each individual are given.
+
+This format can be loaded into R with, for example,
+
+\begin{verbatim}
+read.delim("filename")
+\end{verbatim}
+
+\subsubsection{Old RADmarkers output}
+
+The RADmarkers output used to be considerably less user-friendly, but also incorporated SNP and quality information that may be useful. It can be accessed using the \verb|-o| option. Below is the original description of this output format.
 
 The clustering in the RADmarkers output is somewhat complex, so let's start with the core objects, the tags. With no options added, RADmarkers will output tags like this:
 

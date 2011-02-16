@@ -13,9 +13,10 @@
 # 25/08/10 Version 1.0
 # 08/09/10 1.0.1 Minor bug fixes
 # 29/10/10 1.0.2 Tidy
-# 30/10/10 1.1 Load FASTQ format as well as reads format
-#              Strip restriction site off the start of reads
+# 30/10/10 1.1   Load FASTQ format as well as reads format
+#                Strip restriction site off the start of reads
 # 11/11/10 1.1.1 Bug fixes for test suite - added verbose option
+# 16/02/11 1.2   New RADmarkers output; no changes to RADtags
 
 #############################################################################
 ###
@@ -47,7 +48,7 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.1.1;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.2;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -712,7 +713,7 @@ RADtags - Identifies RAD tags in Illumina reads from RAD samples
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.1.1.
+This documentation refers to RADtools version 1.2.
 
 =head1 SYNOPSIS
 
