@@ -1,3 +1,8 @@
+1.2
+  RADmarkers
+    - Add new TSV output format
+    - Change SNP output option to -s from -o
+    - New option -o produces old output format
 1.1.1
   RADpools
     - Bug fixes after adding test suite
