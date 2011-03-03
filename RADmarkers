@@ -551,7 +551,7 @@ sub summarise_tag_clusters {
 
         my @sorted_alleles;
         $seg_pattern = q{};
-        foreach my $seg_pattern_ref ( sort @seg_patterns ) {
+        foreach my $seg_pattern_ref ( sort {$a->{seg_pattern} cmp $b->{seg_pattern}} @seg_patterns ) {
             push @sorted_alleles, $seg_pattern_ref;
             $seg_pattern .= $seg_pattern_ref->{seg_pattern} . q{ };
         }
@@ -598,7 +598,7 @@ sub output_markers {
               )
             {
                 $cluster_id++;
-                foreach my $allele_ref ( @{$locus_ref} ) {
+                foreach my $allele_ref ( sort {$a->{seg_pattern} cmp $b->{seg_pattern}} @{$locus_ref} ) {
                     print
 "$cluster_id\t$alleles_at_locus\t$allele_ref->{seg_pattern}\t$allele_ref->{sequence}";
                     foreach my $individual ( @{$individuals_ref} ) {
