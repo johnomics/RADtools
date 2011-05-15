@@ -17,6 +17,7 @@
 #                Strip restriction site off the start of reads
 # 11/11/10 1.1.1 Bug fixes for test suite - added verbose option
 # 16/02/11 1.2   New RADmarkers output; no changes to RADtags
+# 15/05/11 1.2.1 Replace -e option with -c; process largest file first
 
 #############################################################################
 ###
@@ -48,7 +49,7 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.2;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.2.1;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -64,7 +65,7 @@ sub main {
 
     my $file_extension    = '.reads';
     my $directory         = '.';
-    my $expected_tags     = -1;
+    my $cluster_distance  = 5;
     my $quality_threshold = 20;
     my $read_threshold    = 2;
     my $max_processes     = 1;
@@ -79,12 +80,12 @@ sub main {
         'man'       => \$man,
         'verbose|v' => \$verbose,
 
-        'file_extension|f=s' => \$file_extension,
-        'directory|d=s'      => \$directory,
-        'expected_tags|e=i'  => \$expected_tags,
-        'site|s=s'           => \$site,
-        'illumina|i'         => \$illumina,
-        'fastq|z'            => \$fastq,
+        'file_extension|f=s'   => \$file_extension,
+        'directory|d=s'        => \$directory,
+        'cluster_distance|c=i' => \$cluster_distance,
+        'site|s=s'             => \$site,
+        'illumina|i'           => \$illumina,
+        'fastq|z'              => \$fastq,
 
         'quality_threshold|q=i' => \$quality_threshold,
         'read_threshold|r=i'    => \$read_threshold,
@@ -95,12 +96,10 @@ sub main {
     pod2usage( -exitval => 5, -verbose => 1 ) if $help;
     pod2usage( -exitval => 6, -verbose => 2 ) if $man;
 
-    pod2usage( -exitval => 7, -verbose => 0 ) if ( $expected_tags == -1 );
-
     pod2usage( -exitval => 8, -verbose => 0 ) if ( $fastq && $site eq '-' );
 
-    die "Please specify a positive value for expected tags (-e)\n"
-      if ( $expected_tags <= 0 );
+    die "Please specify a positive value for cluster distance (-c)\n"
+      if ( $cluster_distance <= 0 );
 
     die("Site (-s) should only contain AGCT\n")
       if ( ( $site ne '-' ) && ($site ne '') && ( $site !~ /^[ACGT]+$/ ) );
@@ -142,7 +141,7 @@ sub main {
     my $pm = new Parallel::ForkManager( scalar(@read_filenames) );
     $pm->set_max_procs($max_processes);
 
-    foreach my $read_filename (@read_filenames) {
+    foreach my $read_filename (reverse sort {-s $a <=> -s $b} @read_filenames) {
 
         next if ( $read_filename =~ /^\./ );
 
@@ -232,7 +231,7 @@ sub main {
                 file_extension    => $file_extension,
                 directory         => $directory,
                 site              => $site,
-                expected_tags     => $expected_tags,
+                cluster_distance  => $cluster_distance,
                 quality_threshold => $quality_threshold,
                 read_threshold    => $read_threshold,
             }
@@ -256,7 +255,7 @@ sub main {
 ### Parameters: read_filename - file of reads to process
 ###             file extension - usually .reads or .fastq
 ###             directory - output directory
-###             expected_tags - estimate of tags to aim for
+###             cluster distance - number of mismatches allowed within cluster 
 ###             quality_threshold - reject reads with qualities below this
 ###             read_threshold - reject tags with read counts less than this
 ### Returns:    nothing (outputs to file)
@@ -270,7 +269,7 @@ sub cluster_one_sample {
     my $file_extension    = $arg_ref->{file_extension};
     my $directory         = $arg_ref->{directory};
     my $site              = $arg_ref->{site};
-    my $expected_tags     = $arg_ref->{expected_tags};
+    my $cluster_distance  = $arg_ref->{cluster_distance};
     my $quality_threshold = $arg_ref->{quality_threshold};
     my $read_threshold    = $arg_ref->{read_threshold};
 
@@ -284,11 +283,6 @@ sub cluster_one_sample {
     $sample_name =~ s/$file_extension//;
     $sample_name =~ s/$directory\///;
 
-    # This calculates how many bases required to uniquely ID
-    # this number of tags (reverse of 4^(expected_tags))
-    # with a couple of extra orders of magnitude added
-    # so that SNPs can be included in the same cluster
-    my $threshold_distance = ceil( ( log $expected_tags ) / ( log 4 ) );
     my @bases = qw{A C G T};
 
     open my $out_file, '>', "$directory\/$sample_name\.tags"
@@ -301,7 +295,7 @@ sub cluster_one_sample {
     if ( defined $first_read ) {
         $read_length = length $first_read->{r1s};
         $unique_hash =
-          get_unique( $in_file, $site, $first_read, $threshold_distance );
+          get_unique( $in_file, $site, $first_read, $cluster_distance );
         $first_unique = $unique_hash->{uniq};
         $first_read   = $unique_hash->{read};
         push @cluster, $first_unique;
@@ -310,7 +304,7 @@ sub cluster_one_sample {
 
     my $count = 0;
     while ( $unique_hash =
-        get_unique( $in_file, $site, $first_read, $threshold_distance ) )
+        get_unique( $in_file, $site, $first_read, $cluster_distance ) )
     {
 
         # Exit if no good hash could be returned
@@ -324,7 +318,7 @@ sub cluster_one_sample {
         my $unique_distance =
           compare_uniques( $first_unique, $new_unique, $read_length );
 
-        if ( $unique_distance > $threshold_distance ) {
+        if ( $unique_distance > $cluster_distance ) {
             find_cluster_variants( \@cluster, $read_length, $quality_threshold,
                 $read_threshold, $out_file );
             $first_unique = $new_unique;
@@ -439,7 +433,7 @@ sub get_read {
 #############################################################################
 
 sub get_unique {
-    my ( $in_file, $site, $first_read, $threshold_distance ) = @_;
+    my ( $in_file, $site, $first_read, $cluster_distance ) = @_;
 
     my $unique_ok = 0;
     my $new_read;
@@ -466,7 +460,7 @@ sub get_unique {
         map {
             if ( $_ > 0 ) { $high_qual_bases++; }
         } @{ $unique->{q} };
-        if ( $high_qual_bases > ( $threshold_distance * 2 ) ) {
+        if ( $high_qual_bases > ( $cluster_distance * 2 ) ) {
             $unique_ok = 1;
         }
         else {
@@ -713,15 +707,15 @@ RADtags - Identifies RAD tags in Illumina reads from RAD samples
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.2.
+This documentation refers to RADtools version $main::VERSION.
 
 =head1 SYNOPSIS
 
 =over 8
 
-=item RADtags -e <EXPECTED_TAGS> [options]
+=item RADtags [options]
 
-=item RADtags -e <EXPECTED_TAGS> -z -s <SITE> [options]
+=item RADtags -z -s <SITE> [options]
 
 =item RADtags --help
 
@@ -755,9 +749,9 @@ Suffix of filenames containing RAD reads (default '.reads'). To load a particula
 
 Name of directory containing tags files (ie prefix of pools filename if using RADtools conventions). Default is working directory (.).
 
-=item B<-e, --expected_tags>
+=item B<-c, --cluster_distance>
 
-Estimate of number of tags expected in sample (required)
+The maximum number of mismatches allowed for a tag to be included in a cluster (default 5)
 
 =item B<-z, --fastq>
 
@@ -787,7 +781,7 @@ Reject any tags with counts lower than this threshold. Default 2, ie throw away 
 
 =head1 DESCRIPTION
 
-B<RADtags> accepts as input read files output by RADpools and an estimate of the number of tags expected in the sample. It generates a set of candidate RAD tags for the sample, correcting errors in low quality reads and calling variants. Tags are associated with a read count and a fragment count, which is the number of unique single/paired end combinations seen. Qualities are called for tags. Paired ends are output for each tag, with read counts for each paired end fragment.
+B<RADtags> accepts as input read files output by RADpools. It generates a set of candidate RAD tags for the sample, correcting errors in low quality reads and calling variants. Tags are associated with a read count and a fragment count, which is the number of unique single/paired end combinations seen. Qualities are called for tags. Paired ends are output for each tag, with read counts for each paired end fragment.
 
 =head1 AUTHOR
 
@@ -795,7 +789,7 @@ John Davey <john.davey@ed.ac.uk>
 
 =head1 LICENCE AND COPYRIGHT
 
-Copyright 2010 John Davey, University of Edinburgh john.davey@ed.ac.uk
+Copyright 2010,2011 John Davey, University of Edinburgh john.davey@ed.ac.uk
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

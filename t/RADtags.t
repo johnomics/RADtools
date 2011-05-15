@@ -22,11 +22,12 @@
 # History:
 # 02/11/10 Initial version
 # 11/11/10 1.1.1 28 tests written to test input options
+# 15/05/11 1.2.1 Replace -e option with -c
 
 use strict;
 use warnings;
 
-use Test::More tests=>28;
+use Test::More tests=>26;
 use Test::Trap
   qw(trap $trap :flow :stderr(systemsafe) :stdout(systemsafe) :warn :exit);
 
@@ -34,9 +35,7 @@ use Test::Trap
 ok( require('RADtags'), 'loaded RADtags okay' ) or exit;
 
 # Test basic options
-# Test run with no parameters
-my @r = trap { main() };
-is( $trap->exit, 7, 'Print usage when run with no options' );
+my @r;
 
 # Test usage message
 @ARGV = ('-u');
@@ -64,37 +63,32 @@ is( $trap->exit, 3, 'Query -m option alone (should have max_processes value)' );
 is( $trap->exit, 6, 'Print man page when run with --man' );
 
 # Test required input options
-@ARGV = ( '-e10000', '-z' );
+@ARGV = ( '-z' );
 @r = trap { main() };
 is( $trap->exit, 8, 'FASTQ specified with no site given' );
 
-# Default
-@ARGV = ('-e-1');
-@r = trap { main() };
-is( $trap->exit, 7, 'Reject expected tags of -1' );
-
 # Negative
-@ARGV = ('-e-10');
+@ARGV = ('-c-10');
 @r = trap { main() };
 like(
     $trap->die,
-    qr/Please specify a positive value for expected tags/,
+    qr/Please specify a positive value for cluster distance/,
     'Reject negative expected tags'
 );
 
 # Empty
-@ARGV = ('-e');
+@ARGV = ('-c');
 @r = trap { main() };
-is( $trap->exit, 3, 'Empty expected tags value' );
+is( $trap->exit, 3, 'Empty cluster distance value' );
 
 # Test site option
 # Empty
-@ARGV = ( '-e7000', '-s' );
+@ARGV = ( '-s' );
 @r = trap { main() };
 is( $trap->exit, 3, 'Empty restriction site value' );
 
 # Non-ACGT
-@ARGV = ( '-e7000', '-s1a!X' );
+@ARGV = ( '-s1a!X' );
 @r = trap { main() };
 like(
     $trap->die,
@@ -105,7 +99,7 @@ like(
 chdir('data');
 
 # Test directory option
-@ARGV = ( '-e10000', '-dfakedir' );
+@ARGV = ( '-dfakedir' );
 @r = trap { main() };
 like(
     $trap->die,
@@ -113,13 +107,13 @@ like(
     'Fail on unknown directory'
 );
 
-@ARGV = ( '-e10000', '-dBeatles_tags', '-v' );
+@ARGV = ( '-dBeatles_tags', '-v' );
 @r = trap { main() };
 like( $trap->stdout, qr/Done/, 'Test successful run' );
 
 # Longer than read length
 @ARGV = (
-    '-e7000', '-dBeatles_tags',
+    '-dBeatles_tags',
     '-sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 );
 @r = trap { main() };
@@ -131,7 +125,7 @@ like(
 
 # Test file extension option
 
-@ARGV = ( '-e10000', '-dBeatles_tags', '-v', '-ffakeext' );
+@ARGV = ( '-dBeatles_tags', '-v', '-ffakeext' );
 @r = trap { main() };
 like(
     $trap->die,
@@ -140,7 +134,7 @@ like(
 );
 
 chdir('Beatles_tags');
-@ARGV = ( '-e10000', '-v' );
+@ARGV = ( '-v' );
 @r = trap { main() };
 like( $trap->stdout, qr/Done/, 'Test current directory lookup' );
 
@@ -150,7 +144,7 @@ chdir('..');
 # If data is in reads format, this option makes no difference
 # Assuming reads is only output by RADpools, and all RADpools data is Sanger
 
-@ARGV = ( '-e10000', '-dBeatles_tags' );
+@ARGV = ( '-dBeatles_tags' );
 my @output = (
 "TGCAGGCACCAATGATGGATTTCGCTTGCATTACGTTCGTGGCAAA HHHHHHHHHHHHHHGHHHHHHHHHHHIHHHHHHHHIHHHIHAGGGG 3 1\n",
     "	ATCAGGTGTCCGATACCCATATCACAGGCTCTTACTAGCTTGGGGTCGGAT 3\n",
@@ -162,7 +156,7 @@ my @output = (
 match_file( \@ARGV, "Beatles_tags/John.tags", \@output,
     'Check Sanger reads output with no Illumina option' );
 
-@ARGV = ( '-e10000', '-dBeatles_tags' );
+@ARGV = ( '-dBeatles_tags' );
 @output = (
 "TGCAGGGTTCACGGCAACTCCTTCGCTGAGCGTCTTACGAAGATTA hgggghgggdggggfggggggffgfhefeeggfegfgdgecd`a`a 3 1\n",
     "	ATTTTGGCGGAAGGTTGAAAGGTATTTTTTAACAAATTTTACGTTTACGAC 3\n",
@@ -174,7 +168,7 @@ match_file( \@ARGV, "Beatles_tags/John.tags", \@output,
 match_file( \@ARGV, "Beatles_tags/Paul.tags", \@output,
     'Check Illumina reads output with no Illumina option' );
 
-@ARGV = ( '-e10000', '-dBeatles_tags', '-i' );
+@ARGV = ( '-dBeatles_tags', '-i' );
 @output = (
 "TGCAGGCACCAATGATGGATTTCGCTTGCATTACGTTCGTGGCAAA HHHHHHHHHHHHHHGHHHHHHHHHHHIHHHHHHHHIHHHIHAGGGG 3 1\n",
     "	ATCAGGTGTCCGATACCCATATCACAGGCTCTTACTAGCTTGGGGTCGGAT 3\n",
@@ -186,7 +180,7 @@ match_file( \@ARGV, "Beatles_tags/Paul.tags", \@output,
 match_file( \@ARGV, "Beatles_tags/John.tags", \@output,
     'Check Sanger reads output with Illumina option' );
 
-@ARGV = ( '-e10000', '-dBeatles_tags', '-i' );
+@ARGV = ( '-dBeatles_tags', '-i' );
 @output = (
 "TGCAGGGTTCACGGCAACTCCTTCGCTGAGCGTCTTACGAAGATTA hgggghgggdggggfggggggffgfhefeeggfegfgdgecd`a`a 3 1\n",
     "	ATTTTGGCGGAAGGTTGAAAGGTATTTTTTAACAAATTTTACGTTTACGAC 3\n",
@@ -199,7 +193,7 @@ match_file( \@ARGV, "Beatles_tags/Paul.tags", \@output,
     'Check Illumina reads output with Illumina option' );
 
 # Test FASTQ->reads conversion
-@ARGV = ( '-e10000', '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG', );
+@ARGV = ( '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG', );
 @output = (
 "TGCAGGCACCAATGATGGATTTCGCTTGCATTACGTTCGTGGCAAA ggggggggggggggfggggggggggghgggggggghggghg`ffff ATCAGGTGTCCGATACCCATATCACAGGCTCTTACTAGCTTGGGGTCGGAT gggdggggggggggggggggggggggggggggggggggggggggg_cL[`T\n",
 "TGCAGGCCCATCAACGAAAATCGCATTGTTATTCGTTGAATGATAG Rc`aadggbgfa_f]V__[`TJTTQVXY`[`YYOccaS__BBBBBB CCTAACTTAAAATGTCTAATATTTCACATGACGGAATTAGGACATAAAAAT eee^eeff`fcffffeffffceeeefffffffeffffffffefffdfddff\n",
@@ -221,7 +215,7 @@ match_file(
 
 # Check processing Illumina/Sanger FASTQ data with/without Illumina option
 
-@ARGV = ( '-e10000', '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG' );
+@ARGV = ( '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG' );
 @output = (
 "CCCATCAACGAAAATCGCATTGTTATTCGTTGAATGATAG fgcefccfbe`ce`__^]UdbfgedgeeedcfafadYbeB 3 3\n",
     "	AACAAAATAAAAATAGAGTAAGTACATTTTTTTGGTGATAACAGTCATGAT 1\n",
@@ -237,7 +231,7 @@ match_file( \@ARGV, "Beatles_tags_fastq/illumina.tags", \@output,
 'Check Illumina FASTQ processing without Illumina option (outputs Illumina format)'
 );
 
-@ARGV = ( '-e10000', '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG' );
+@ARGV = ( '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG' );
 @output = (
 "CCCATCAACGAAAATCGCATTGTTATTCGTTGAATGATAG CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCBCCC 3 3\n",
     "	AACAAAATAAAAATAGAGTAAGTACATTTTTTTGGTGATAACAGTCATGAT 1\n",
@@ -255,7 +249,7 @@ match_file( \@ARGV, "Beatles_tags_fastq/sanger.tags", \@output,
 
 # Check processing Illumina/Sanger FASTQ data with Illumina option
 @ARGV =
-  ( '-e10000', '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG', '-i' );
+  ( '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG', '-i' );
 @output = (
 "CCCATCAACGAAAATCGCATTGTTATTCGTTGAATGATAG GHDFGDDGCFADFA@@?>6ECGHFEHFFFEDGBGBE:CF! 3 3\n",
     "	AACAAAATAAAAATAGAGTAAGTACATTTTTTTGGTGATAACAGTCATGAT 1\n",
@@ -272,7 +266,7 @@ match_file( \@ARGV, "Beatles_tags_fastq/illumina.tags", \@output,
 );
 
 @ARGV =
-  ( '-e10000', '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG', '-i' );
+  ( '-c7', '-dBeatles_tags_fastq', '-z', '-f.fastq', '-sTGCAGG', '-i' );
 @output = (
 "CCCATCAACGAAAATCGCATTGTTATTCGTTGAATGATAG \$\$\#\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\$\!\$\$\$ 4 4\n",
     "	AACAAAATAAAAATAGAGTAAGTACATTTTTTTGGTGATAACAGTCATGAT 1\n",

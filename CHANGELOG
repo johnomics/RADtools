@@ -1,3 +1,11 @@
+1.2.1
+  Thanks to Yannick Wurm and Claudius Kerth for feedback and suggestions
+  RADpools
+   - Revised verbose output format to highlight rejected reads
+  RADtags
+   - Replaced -e (expected_tags) option with -c for cluster distance;
+     not required on execution, defaults to 5
+   - Processes files in order of size, largest first
 1.2
   RADmarkers
     - Add new TSV output format
