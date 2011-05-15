@@ -1,12 +1,15 @@
 RADtools
-Version 1.2
-16 February 2011
+Version 1.2.1
+15 May 2011
 John Davey john.davey@ed.ac.uk
 
 Tools for processing RAD Sequencing Illumina reads. See RADmanual for more details.
 
 Installation: Requires Perl 5.10 and CPAN module Parallel::ForkManager. No compilation required. Add RADtools.pm directory to @INC.
 
+Citation: Baxter SW, Davey JW, Johnston JS, Shelton AM, Heckel DG, Jiggins CD, Blaxter ML (2011). 
+          Linkage mapping and comparative genomics using next-generation RAD sequencing of a non-model organism.
+          PLoS ONE 6(4):e19315.
 Wiki: https://www.wiki.ed.ac.uk/display/RADSequencing/
 Mailing list: rad-sequencing@jiscmail.ac.uk
 github: git://github.com/johnomics/RADtools.git
