@@ -20,6 +20,8 @@
 #                Load individuals from pools file and keep in this order
 # 16/02/11 1.2   Produces R-compatible TSV output format; add -o option
 #                to produce old output
+# 16/05/11 1.2.1 Replaced Allele with Tag in output, specify pools file
+#                should be in current directory
 
 #############################################################################
 ###
@@ -40,7 +42,7 @@ use RADtools qw(get_pools_filename QUAL_OFFSET);
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.2;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.2.1;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -584,7 +586,7 @@ sub output_markers {
     my $fragments       = $arg_ref->{fragments};
 
     my $cluster_id = 0;
-    print "ClusterID\tClusterAlleles\tSegPattern\tAllele";
+    print "ClusterID\tClusterTags\tSegPattern\tTag";
     map { print "\t$_"; } @{$individuals_ref};
     print "\n";
     foreach my $alleles_at_locus ( sort { $a <=> $b } keys %{$clusters_ref} ) {
@@ -827,7 +829,7 @@ RADmarkers - generates candidate markers from RAD tags across many individuals
 
 =head1 VERSION
 
-This documentation refers to RADtools version 1.2.
+This documentation refers to RADtools version $main::VERSION.
 
 =head1 SYNOPSIS
 

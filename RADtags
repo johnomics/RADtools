@@ -18,6 +18,7 @@
 # 11/11/10 1.1.1 Bug fixes for test suite - added verbose option
 # 16/02/11 1.2   New RADmarkers output; no changes to RADtags
 # 15/05/11 1.2.1 Replace -e option with -c; process largest file first
+#                Document -v option
 
 #############################################################################
 ###
@@ -740,6 +741,10 @@ Print the manual page and exit
 =item B<--version>
 
 Print version number and exit
+
+=item B<-v, verbose>
+
+Verbose output; show names of files being processed
 
 =item B<-f, --file_extension>
 

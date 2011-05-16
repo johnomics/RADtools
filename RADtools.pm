@@ -19,6 +19,7 @@
 
 # History:
 # 11/11/10 1.1.1 Initial version
+# 16/05/11 1.2.1 Minor fixes
 
 package RADtools;
 
@@ -31,7 +32,7 @@ use Cwd;
 use File::Basename;
 use File::Copy;
 
-$VERSION   = 1.1;
+$VERSION   = 1.2.1;
 @ISA       = qw(Exporter);
 @EXPORT    = ();
 @EXPORT_OK = qw(get_pools_filename sort_reads_file load_fastq_pair QUAL_OFFSET);
@@ -53,7 +54,7 @@ sub get_pools_filename {
 
     if ( @pools_files == 0 ) {
         die
-"No pools file found! Please check current directory or specify -d option\n";
+"No pools file found! Please check current directory or specify -d option. Pools file should be in same directory as the directory specified by -d (which defaults to current directory)\n";
     }
 
     if ( @pools_files > 1 ) {

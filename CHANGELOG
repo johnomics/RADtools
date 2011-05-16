@@ -6,6 +6,10 @@
    - Replaced -e (expected_tags) option with -c for cluster distance;
      not required on execution, defaults to 5
    - Processes files in order of size, largest first
+   - Document verbose option
+  RADmarkers
+   - Clarify error message when no pools file present
+   - Replace Allele with Tag in output header
 1.2
   RADmarkers
     - Add new TSV output format

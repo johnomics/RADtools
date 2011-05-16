@@ -195,6 +195,9 @@ RADtags will match up files with data in this format but otherwise will process 
 \subsection{Basic options}
 
 \begin{itemize}
+    \item \verb|-v, --verbose|
+    Verbose output. Show names of files being processed.
+
     \item \verb|-f, --file_extension|
     
     By default, RADtags loads all files that end with `.reads'. If -z is specified, RADtags will search for files ending in `.fastq'. Any other extension can be specified with this option. Separators such as `.' must be specified if present.
@@ -392,13 +395,13 @@ Tags are clustered together by sequence similarity. Clusters are separated by em
 
 \subsection{RADmarkers}
 
-The RADmarkers output is in tab separated values (tsv) format, suitable for loading in R or Excel. Each record represents a particular allele and has the following fields:
+The RADmarkers output is in tab separated values (tsv) format, suitable for loading in R or Excel. Each record represents a particular tag, or candidate allele, and has the following fields:
 
 \begin{itemize}
-    \item \verb|ClusterID| - unique ID for a cluster of alleles
-    \item \verb|ClusterAlleles| - the number of alleles in this cluster
-    \item \verb|SegPattern| - the presence/absence segregation pattern of this allele across all individuals
-    \item \verb|Allele| - the sequence of the allele
+    \item \verb|ClusterID| - unique ID for a cluster of tags
+    \item \verb|ClusterTags| - the number of tags in this cluster
+    \item \verb|SegPattern| - the presence/absence segregation pattern of this tag across all individuals
+    \item \verb|Tag| - the sequence of the tag
 \end{itemize}
 
 Following these fields, the read or fragment counts for each individual are given.
