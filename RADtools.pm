@@ -20,6 +20,7 @@
 # History:
 # 11/11/10 1.1.1 Initial version
 # 16/05/11 1.2.1 Minor fixes
+# 03/06/11 1.2.2 Modify reads format for ustacks output
 
 package RADtools;
 

@@ -25,6 +25,8 @@
 #  4/11/10 1.1.1 Improved robustness following implementation of test suite
 # 16/02/11 1.2   New RADmarkers output; no changes to RADpools
 # 15/05/11 1.2.1 Clarify verbose output
+# 03/06/11 1.2.2 Always include read names in .reads format
+#                for RADtags ustacks output
 
 #############################################################################
 ###
@@ -57,10 +59,10 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.2.1;  # Used by Getopt::Long to provide --version
-local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
+local $main::VERSION    = 1.2.1;    # Used by Getopt::Long to provide --version
+local $OUTPUT_AUTOFLUSH = 1;        # So reporting on progress works
 
-main(@ARGV) unless caller();      # So test suite can call script
+main(@ARGV) unless caller();        # So test suite can call script
 
 sub main {
 
@@ -116,8 +118,8 @@ sub main {
     pod2usage( -exitval => 7, -verbose => 0 ) if ( $read1_file eq q{} );
     pod2usage( -exitval => 8, -verbose => 0 ) if ( $directory  eq q{} );
 
-    die "Quality threshold must be between 0 and 40\n" if (($quality_threshold <0) || ($quality_threshold > 40));
-
+    die "Quality threshold must be between 0 and 40\n"
+      if ( ( $quality_threshold < 0 ) || ( $quality_threshold > 40 ) );
 
     # If directory is ., get basename of current directory
     if ( $directory eq '.' ) {
@@ -232,8 +234,12 @@ sub main {
         if ( ($verbose) && ( $record_count_total % 100_000 == 0 ) ) {
             printf
 "OK: %8d | Rejected %8d (FASTQ: %8d; RAD: %8d; Res: %8d; MID: %8d; Short: %8d)\n",
-              $record_count_valid, 
-              $non_fastq_count+$wrong_rad_format_count+$wrong_ressite_count+$wrong_mid_count+$short_sequence_count, 
+              $record_count_valid,
+              $non_fastq_count +
+              $wrong_rad_format_count +
+              $wrong_ressite_count +
+              $wrong_mid_count +
+              $short_sequence_count,
               $non_fastq_count,
               $wrong_rad_format_count,
               $wrong_ressite_count, $wrong_mid_count, $short_sequence_count;
@@ -248,8 +254,8 @@ sub main {
         }
 
         # Set trim to length of RAD sequence if not previously set
-        my $tag_length = (length $pair_ref->{r1seq}) - $mid_length;
-        if (( $trim <= 0 ) or ($trim > $tag_length)) {
+        my $tag_length = ( length $pair_ref->{r1seq} ) - $mid_length;
+        if ( ( $trim <= 0 ) or ( $trim > $tag_length ) ) {
             $trim = $tag_length;
         }
 
@@ -324,17 +330,14 @@ sub main {
             $dna_sequence = substr $dna_sequence, 0, $trim;
             $quality_tail = substr $quality_tail, 0, $trim;
 
-            if ( $output_fastq && ( $pair_ref->{r1name} ne q{} ) ) {
-                print { $pool_handles{$pool} } "$pair_ref->{r1name} ";
-            }
-            print { $pool_handles{$pool} } "$dna_sequence $quality_tail"
+            print { $pool_handles{$pool} }
+              "$pair_ref->{r1name} $dna_sequence $quality_tail"
               or die "Can't write to pools file: $OS_ERROR\n";
+
             if ( $read2_file ne q{} ) {
-                if ( $output_fastq && ( $pair_ref->{r2name} ne q{} ) ) {
-                    print { $pool_handles{$pool} } " $pair_ref->{r2name}";
-                }
                 print { $pool_handles{$pool} }
-                  " $pair_ref->{r2seq} $pair_ref->{r2qual}";
+                  "$pair_ref->{r2name} $pair_ref->{r2seq} $pair_ref->{r2qual}"
+                  or die "Can't write to pools file: $OS_ERROR\n";
             }
             print { $pool_handles{$pool} } "\n";
             $record_count_valid++;
@@ -379,7 +382,7 @@ sub main {
                 directory     => $directory,
                 read_filename => $read_filename,
                 sort_start    => $res_site_length + 1,
-                read1_field   => $output_fastq ? 2 : 1,
+                read1_field   => 2,
             }
         );
 

@@ -19,6 +19,8 @@
 # 16/02/11 1.2   New RADmarkers output; no changes to RADtags
 # 15/05/11 1.2.1 Replace -e option with -c; process largest file first
 #                Document -v option
+# 03/06/11 1.2.2 Output ustacks format
+#                Fix offset bug for sorting reads where res site present
 
 #############################################################################
 ###
@@ -50,10 +52,10 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.2.1;    # Used by Getopt::Long to provide --version
-local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
+local $main::VERSION    = 1.2.2;    # Used by Getopt::Long to provide --version
+local $OUTPUT_AUTOFLUSH = 1;        # So reporting on progress works
 
-main(@ARGV) unless caller;        # So test suite can call script
+main(@ARGV) unless caller;          # So test suite can call script
 
 sub main {
 
@@ -73,6 +75,7 @@ sub main {
     my $site              = '-';
     my $illumina          = 0;
     my $fastq             = 0;
+    my $ustacks           = 0;
 
     my $options_okay = GetOptions(
 
@@ -87,6 +90,7 @@ sub main {
         'site|s=s'             => \$site,
         'illumina|i'           => \$illumina,
         'fastq|z'              => \$fastq,
+        'ustacks|u'            => \$ustacks,
 
         'quality_threshold|q=i' => \$quality_threshold,
         'read_threshold|r=i'    => \$read_threshold,
@@ -103,9 +107,9 @@ sub main {
       if ( $cluster_distance <= 0 );
 
     die("Site (-s) should only contain AGCT\n")
-      if ( ( $site ne '-' ) && ($site ne '') && ( $site !~ /^[ACGT]+$/ ) );
+      if ( ( $site ne '-' ) && ( $site ne '' ) && ( $site !~ /^[ACGT]+$/ ) );
 
-    if (($fastq) && ($file_extension eq '.reads')) {
+    if ( ($fastq) && ( $file_extension eq '.reads' ) ) {
         $file_extension = '.fastq';
     }
 
@@ -116,7 +120,7 @@ sub main {
 
     if ( @read_filenames == 0 ) {
         die
-"No read files found with extension '$file_extension'. Please specify -f. You may need to specify the read file directory using -d.\n";
+"No read files found with extension '$file_extension'. Please specify -z for FASTQ format or -f 'extension' for other extension. You may need to specify the read file directory using -d.\n";
     }
     closedir $readdir;
 
@@ -142,7 +146,9 @@ sub main {
     my $pm = new Parallel::ForkManager( scalar(@read_filenames) );
     $pm->set_max_procs($max_processes);
 
-    foreach my $read_filename (reverse sort {-s $a <=> -s $b} @read_filenames) {
+    foreach
+      my $read_filename ( reverse sort { -s $a <=> -s $b } @read_filenames )
+    {
 
         next if ( $read_filename =~ /^\./ );
 
@@ -195,12 +201,14 @@ sub main {
             {
                 last if ( $pair_ref->{valid} == -1 );
 
-                print $reads_file "$pair_ref->{r1seq} $pair_ref->{r1qual}";
+                print $reads_file
+                  "$pair_ref->{r1name} $pair_ref->{r1seq} $pair_ref->{r1qual}";
 
                 if (   ( defined $pair_ref->{r2seq} )
                     && ( $pair_ref->{r2seq} ne '' ) )
                 {
-                    print $reads_file " $pair_ref->{r2seq} $pair_ref->{r2qual}";
+                    print $reads_file
+" $pair_ref->{r2name} $pair_ref->{r2seq} $pair_ref->{r2qual}";
                 }
                 print $reads_file "\n";
             }
@@ -211,13 +219,13 @@ sub main {
             # Sort reads files
 
             $read_filename = "$directory/$sample_name\.reads";
-            my $sort_start = length($site)>1 ? length($site) : 1;
+            my $sort_start = length($site) > 1 ? length($site) + 1 : 1;
             sort_reads_file(
                 {
                     directory     => $directory,
                     read_filename => $read_filename,
                     sort_start    => $sort_start,
-                    read1_field   => 1
+                    read1_field   => 2
                 }
             );
 
@@ -235,6 +243,7 @@ sub main {
                 cluster_distance  => $cluster_distance,
                 quality_threshold => $quality_threshold,
                 read_threshold    => $read_threshold,
+                ustacks           => $ustacks,
             }
         );
         $pm->finish;
@@ -256,7 +265,7 @@ sub main {
 ### Parameters: read_filename - file of reads to process
 ###             file extension - usually .reads or .fastq
 ###             directory - output directory
-###             cluster distance - number of mismatches allowed within cluster 
+###             cluster distance - number of mismatches allowed within cluster
 ###             quality_threshold - reject reads with qualities below this
 ###             read_threshold - reject tags with read counts less than this
 ### Returns:    nothing (outputs to file)
@@ -273,6 +282,7 @@ sub cluster_one_sample {
     my $cluster_distance  = $arg_ref->{cluster_distance};
     my $quality_threshold = $arg_ref->{quality_threshold};
     my $read_threshold    = $arg_ref->{read_threshold};
+    my $ustacks           = $arg_ref->{ustacks};
 
     my $first_unique;
     my $unique_hash;
@@ -285,9 +295,6 @@ sub cluster_one_sample {
     $sample_name =~ s/$directory\///;
 
     my @bases = qw{A C G T};
-
-    open my $out_file, '>', "$directory\/$sample_name\.tags"
-      or die "Can't open $sample_name\.tags: $OS_ERROR!";
 
     open my $in_file, '<', "$directory/$sample_name$file_extension"
       or die "Can't open $sample_name$file_extension: $OS_ERROR!";
@@ -303,7 +310,18 @@ sub cluster_one_sample {
     }
     else { return; }
 
-    my $count = 0;
+    # Output output file
+    open my $out_file, '>', "$directory\/$sample_name\.tags"
+      or die "Can't open $sample_name\.tags: $OS_ERROR!";
+
+    # Output ustacks format
+    my $ustacks_file;
+    if ($ustacks) {
+        open $ustacks_file, '>', "$directory\/$sample_name\.ustacks.tsv"
+          or die "Can't open $sample_name\.ustacks.tsv: $OS_ERROR!";
+    }
+
+    my $cluster_count = 0;
     while ( $unique_hash =
         get_unique( $in_file, $site, $first_read, $cluster_distance ) )
     {
@@ -321,7 +339,8 @@ sub cluster_one_sample {
 
         if ( $unique_distance > $cluster_distance ) {
             find_cluster_variants( \@cluster, $read_length, $quality_threshold,
-                $read_threshold, $out_file );
+                $read_threshold, $out_file, $ustacks_file, $cluster_count );
+            $cluster_count++;
             $first_unique = $new_unique;
             @cluster      = ($first_unique);
         }
@@ -339,7 +358,9 @@ sub cluster_one_sample {
 
     # Process last cluster
     find_cluster_variants( \@cluster, $read_length, $quality_threshold,
-        $read_threshold, $out_file );
+        $read_threshold, $out_file, $ustacks_file, $cluster_count );
+
+    close $ustacks_file if ($ustacks);
 
     close $out_file
       or die "Couldn't close $sample_name\.tags: $OS_ERROR!\n";
@@ -390,16 +411,20 @@ sub compare_uniques {
 sub get_read {
     my ( $in_file, $site ) = @_;
 
+    my $read1name;
     my $read1seq;
     my $read1qual;
+    my $read2name;
     my $read2seq;
     my $read2qual;
     my $seq_line;
 
     return if ( !( $seq_line = <$in_file> ) );
     chomp $seq_line;
-    ( $read1seq, $read1qual, $read2seq, $read2qual ) = split / /, $seq_line;
+    ( $read1name, $read1seq, $read1qual, $read2name, $read2seq, $read2qual ) =
+      split / /, $seq_line;
 
+    if ( !defined $read2name ) { $read2name = q(); }
     if ( !defined $read2seq )  { $read2seq  = q{}; }
     if ( !defined $read2qual ) { $read2qual = q{}; }
 
@@ -417,8 +442,10 @@ sub get_read {
     }
 
     return {
+        r1n => $read1name,
         r1s => $read1seq,
         r1q => $read1qual,
+        r2n => $read2name,
         r2s => $read2seq,
         r2q => $read2qual
     };
@@ -444,14 +471,16 @@ sub get_unique {
             seq   => $first_read->{r1s},
             count => 1,
         };
-        push @{ $unique->{q} }, $first_read->{r1q};
+        push @{ $unique->{q} }, $first_read->{r1q};    # Quality string
+        push @{ $unique->{n} }, $first_read->{r1n};    # Read name
         push @{ $unique->{prs}{ $first_read->{r2s} } }, $first_read->{r2q};
 
         while ( $new_read = get_read( $in_file, $site ) ) {
             last if ( $new_read->{r1s} ne $unique->{seq} );
 
             $unique->{count}++;
-            push @{ $unique->{q} }, $new_read->{r1q};
+            push @{ $unique->{q} }, $new_read->{r1q};    # Quality string
+            push @{ $unique->{n} }, $new_read->{r1n};    # Read name
             push @{ $unique->{prs}{ $new_read->{r2s} } }, $new_read->{r2q};
         }
 
@@ -476,7 +505,6 @@ sub get_unique {
         }
     }
     return { uniq => $unique, read => $new_read };
-
 }
 
 #############################################################################
@@ -491,7 +519,7 @@ sub get_unique {
 
 sub find_cluster_variants {
     my ( $cluster_ref, $read_length, $quality_threshold, $read_threshold,
-        $out_file )
+        $out_file, $ustacks_file, $cluster_count )
       = @_;
 
     my @tag_bases;
@@ -606,6 +634,8 @@ sub find_cluster_variants {
             }
         }
 
+        $alleles{$seq}{count} = $count;
+
         # By default, throw away singleton tags (tags with only one read)
         next
           if ( $count < $read_threshold );
@@ -656,6 +686,42 @@ sub find_cluster_variants {
           }
           sort keys %pairs;
     }
+
+    # Output ustacks format
+    if ( defined($ustacks_file) ) {
+
+        # Get consensus
+        my @primaries =
+          reverse sort { $alleles{$a}{count} <=> $alleles{$b}{count} } keys %alleles;
+        my $consensus = $primaries[0];
+        return if $alleles{$consensus}{count} < $read_threshold;
+        print $ustacks_file
+          "0\t0\t$cluster_count\t\t0\tconsensus\t\t\t$consensus\t0\t0\t0\n";
+        my $allele_id = 0;
+
+        my %secondaries;
+        foreach my $seq (@primaries) {
+            foreach my $unique ( sort keys %{ $alleles{$seq}{seqs} } ) {
+                my $unique_ref = $alleles{$seq}{seqs}{$unique};
+                if ( $unique_ref->{count} >= $read_threshold ) {
+                    foreach my $read_name ( sort @{$unique_ref->{n}} ) {
+                        print $ustacks_file
+"0\t0\t$cluster_count\t\t\tprimary\t$allele_id\t$read_name\t$unique\t\t\t\n";
+                    }
+                    $allele_id++;
+                }
+                else {
+                    $secondaries{$unique} = $unique_ref;
+                }
+            }
+        }
+        foreach my $seq (sort keys %secondaries) {
+            foreach my $read_name (sort @{$secondaries{$seq}{n}}) {
+                print $ustacks_file "0\t0\t$cluster_count\t\t\tsecondary\t\t$read_name\t$seq\t\t\t\n";
+            }
+        }
+    }
+
     if ($passed) {
         print $out_file "\n" or die "Can't output end of tag record\n";
     }
@@ -781,6 +847,10 @@ Only consider bases with qualities above this threshold when comparing unique se
 =item B<-r, --read_threshold>
 
 Reject any tags with counts lower than this threshold. Default 2, ie throw away all tags with just one read associated with them, which are very likely to be due to sequencing error.
+
+=item B<-u, --ustacks>
+
+Output tags in ustacks format as well as RADtags format.
 
 =back
 
