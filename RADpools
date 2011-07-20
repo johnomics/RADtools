@@ -25,6 +25,7 @@
 #  4/11/10 1.1.1 Improved robustness following implementation of test suite
 # 16/02/11 1.2   New RADmarkers output; no changes to RADpools
 # 15/05/11 1.2.1 Clarify verbose output
+# 20/07/11 1.2.2 Allow Q=41 quality scores following base caller upgrade
 
 #############################################################################
 ###
@@ -57,7 +58,7 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.2.1;  # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.2.2;  # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller();      # So test suite can call script
@@ -165,10 +166,10 @@ sub main {
 
     # Set up quality thresholds and characters
     my $qual_low_char  = ';';
-    my $qual_high_char = 'h';
+    my $qual_high_char = 'i';
     if ($sanger) {
         $qual_low_char  = '!';
-        $qual_high_char = 'I';
+        $qual_high_char = 'J';
     }
 
     # Open RAD sequence file
@@ -256,7 +257,7 @@ sub main {
         # Find any point where Q<threshold and
         # strip off sequence following this point
         my $qual_threshold_char = chr( $quality_threshold + QUAL_OFFSET );
-        if ( $pair_ref->{r1qual} =~ m{(\A[$qual_threshold_char-I]+)}xms ) {
+        if ( $pair_ref->{r1qual} =~ m{(\A[$qual_threshold_char-J]+)}xms ) {
             $quality_tail = $1;
         }
         else {
