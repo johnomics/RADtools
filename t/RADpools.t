@@ -22,11 +22,11 @@
 # History:
 # 05/08/10 Initial version
 # 04/11/10 1.1.1 51 tests written across all functions
-
+# 12/09/11 1.2.3 Added test for P2 MIDs
 use strict;
 use warnings;
 
-use Test::More tests=>51;
+use Test::More tests => 52;
 use Test::Trap
   qw(trap $trap :flow :stderr(systemsafe) :stdout(systemsafe) :warn :exit);
 use File::Path;
@@ -100,7 +100,7 @@ like(
 like( $trap->stdout, qr/4 records loaded/, 'Reads with true MIDs loaded' );
 like(
     $trap->stdout,
-    qr/12 records not matching any listed MIDs/,
+    qr/12 records not matching any listed P1 MIDs/,
     'Reads with any mismatches in MIDs rejected when -f not specified'
 );
 
@@ -119,7 +119,7 @@ unlike(
 like( $trap->stdout, qr/14 records loaded/, 'Reads with fuzzy MIDs loaded' );
 like(
     $trap->stdout,
-    qr/2 records not matching any listed MIDs/,
+    qr/2 records not matching any listed P1 MIDs/,
     'Reads with more than one mismatch or N rejected when -f specified'
 );
 
@@ -135,6 +135,10 @@ like(
     qr/2 records not matching restriction enzyme site/,
     'Reads with more than one mismatch in restriction site rejected'
 );
+
+@ARGV = ( '-iBeatles.fastq', '-pBeatles2.fastq', '-dBeatles_p2mids', '-v' );
+@r = trap { main() };
+like( $trap->stdout, qr/4 records loaded/, 'Reads with P2 MIDs loaded' );
 
 # Test faulty pools file going in
 
@@ -166,12 +170,12 @@ like(
 is_deeply(
     \%mid_pools,
     {
-        'CGATT' => ['Brian'],
-        'AGTCA' => ['Brian'],
-        'GACTA' => ['George'],
-        'CTGAC' => ['Mal'],
-        'CAACT' => ['Paul'],
-        'ATATC' => ['John']
+        'CGATT' => { '' => ['Brian'] },
+        'AGTCA' => { '' => ['Brian'] },
+        'GACTA' => { '' => ['George'] },
+        'CTGAC' => { '' => ['Mal'] },
+        'CAACT' => { '' => ['Paul'] },
+        'ATATC' => { '' => ['John'] }
     },
     'Faulty MIDs processed correctly'
 );
@@ -206,7 +210,7 @@ like(
 );
 like(
     $trap->stdout,
-    qr/1 records not matching any listed MIDs/,
+    qr/1 records not matching any listed P1 MIDs/,
     'Unknown MIDs rejected'
 );
 
@@ -270,36 +274,50 @@ like(
 like( $trap->stdout, qr/0 records loaded/,
     'Overlong restriction enzyme given' );
 
-
 # Quality threshold is between 0 and 40
-@ARGV=('-iread1.fastq','-dBeatles','-v','-q-1');
-@r = trap {main()};
-like ($trap->die, qr/Quality threshold must be between 0 and 40/, 'Reject quality threshold below 0');
+@ARGV = ( '-iread1.fastq', '-dBeatles', '-v', '-q-1' );
+@r = trap { main() };
+like(
+    $trap->die,
+    qr/Quality threshold must be between 0 and 40/,
+    'Reject quality threshold below 0'
+);
 
-@ARGV=('-iread1.fastq','-dBeatles','-v','-q41');
-@r = trap {main()};
-like ($trap->die, qr/Quality threshold must be between 0 and 40/, 'Reject quality threshold over 40');
+@ARGV = ( '-iread1.fastq', '-dBeatles', '-v', '-q41' );
+@r = trap { main() };
+like(
+    $trap->die,
+    qr/Quality threshold must be between 0 and 40/,
+    'Reject quality threshold over 40'
+);
 
 # Trimming is between 0 and length of read
-@ARGV=('-iread1.fastq','-dBeatles','-v','-t-1');
-@r = trap {main()};
-like ($trap->stdout, qr/12 records loaded/, 'Negative trim values set to read length');
+@ARGV = ( '-iread1.fastq', '-dBeatles', '-v', '-t-1' );
+@r = trap { main() };
+like(
+    $trap->stdout,
+    qr/12 records loaded/,
+    'Negative trim values set to read length'
+);
 
-@ARGV=('-iread1.fastq','-dBeatles','-v','-t52');
-@r = trap {main()};
-like ($trap->stdout, qr/12 records loaded/, 'Trim values longer than read length set to read length');
+@ARGV = ( '-iread1.fastq', '-dBeatles', '-v', '-t52' );
+@r = trap { main() };
+like(
+    $trap->stdout,
+    qr/12 records loaded/,
+    'Trim values longer than read length set to read length'
+);
 
 # Spot check quality and trim combinations
-@ARGV=('-iread1.fastq','-dBeatles','-v','-q10', '-t45');
-@r = trap {main()};
-like ($trap->stdout, qr/9 records loaded/, 'Spot check q=10, t=45');
-@ARGV=('-iread1.fastq','-dBeatles','-v','-q10', '-t40');
-@r = trap {main()};
-like ($trap->stdout, qr/12 records loaded/, 'Spot check q=10, t=40');
-@ARGV=('-iread1.fastq','-dBeatles','-v','-q20', '-t40');
-@r = trap {main()};
-like ($trap->stdout, qr/10 records loaded/, 'Spot check q=20, t=40');
-
+@ARGV = ( '-iread1.fastq', '-dBeatles', '-v', '-q10', '-t45' );
+@r = trap { main() };
+like( $trap->stdout, qr/9 records loaded/, 'Spot check q=10, t=45' );
+@ARGV = ( '-iread1.fastq', '-dBeatles', '-v', '-q10', '-t40' );
+@r = trap { main() };
+like( $trap->stdout, qr/12 records loaded/, 'Spot check q=10, t=40' );
+@ARGV = ( '-iread1.fastq', '-dBeatles', '-v', '-q20', '-t40' );
+@r = trap { main() };
+like( $trap->stdout, qr/10 records loaded/, 'Spot check q=20, t=40' );
 
 # Check reads output
 @ARGV = ( '-iread1.fastq', '-pread2.fastq', '-dBeatles' );
@@ -348,18 +366,22 @@ open my $john2_fh, '<', "Beatles/John_2.fastq"
   or die "Can't open Beatles/John_2.fastq\n";
 my @john2 = <$john2_fh>;
 close $john2_fh;
-is_deeply( \@john2, [
-    "\@HWUSI-EAS721_0001:2:4:978:315#0/2\n",
-    "ATCAGGTGTCCGATACCCATATCACAGGCTCTTACTAGCTTGGGGTCGGAT\n",
-    "+HWUSI-EAS721_0001:2:4:978:315#0/2\n",
-    "HHHEHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH\@D-<A5\n",
-    "\@HWUSI-EAS721_0001:2:4:978:1113#0/2\n",
-    "GGTTGCTCNCNTTCTGTGTCGCNTGTNNTCATACCTCGCGCATGCAGCACC\n",
-    "+HWUSI-EAS721_0001:2:4:978:1113#0/2\n",
-    "###################################################\n",
-    "\@HWUSI-EAS721_0001:2:4:978:105#0/2\n",
-    "AACTCTAGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGG\n",
-    "+HWUSI-EAS721_0001:2:4:978:105#0/2\n",
-    "GGGGGGGGGGGGGEGGGGGGGGGGGEGGEGGGBGGGEGEGGFFGEGGGGGE\n"
-    ], 'Check Read 2 sorted FASTQ output' );
+is_deeply(
+    \@john2,
+    [
+        "\@HWUSI-EAS721_0001:2:4:978:315#0/2\n",
+        "ATCAGGTGTCCGATACCCATATCACAGGCTCTTACTAGCTTGGGGTCGGAT\n",
+        "+HWUSI-EAS721_0001:2:4:978:315#0/2\n",
+        "HHHEHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH\@D-<A5\n",
+        "\@HWUSI-EAS721_0001:2:4:978:1113#0/2\n",
+        "GGTTGCTCNCNTTCTGTGTCGCNTGTNNTCATACCTCGCGCATGCAGCACC\n",
+        "+HWUSI-EAS721_0001:2:4:978:1113#0/2\n",
+        "###################################################\n",
+        "\@HWUSI-EAS721_0001:2:4:978:105#0/2\n",
+        "AACTCTAGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGG\n",
+        "+HWUSI-EAS721_0001:2:4:978:105#0/2\n",
+        "GGGGGGGGGGGGGEGGGGGGGGGGGEGGEGGGBGGGEGEGGFFGEGGGGGE\n"
+    ],
+    'Check Read 2 sorted FASTQ output'
+);
 

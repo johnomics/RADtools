@@ -26,6 +26,7 @@
 # 16/02/11 1.2   New RADmarkers output; no changes to RADpools
 # 15/05/11 1.2.1 Clarify verbose output
 # 20/07/11 1.2.2 Allow Q=41 quality scores following base caller upgrade
+# 12/09/11 1.2.3 If P2 MIDs given, use them to sort reads
 
 #############################################################################
 ###
@@ -58,10 +59,10 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.2.2;  # Used by Getopt::Long to provide --version
-local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
+local $main::VERSION    = 1.2.3;    # Used by Getopt::Long to provide --version
+local $OUTPUT_AUTOFLUSH = 1;        # So reporting on progress works
 
-main(@ARGV) unless caller();      # So test suite can call script
+main(@ARGV) unless caller();        # So test suite can call script
 
 sub main {
 
@@ -117,8 +118,8 @@ sub main {
     pod2usage( -exitval => 7, -verbose => 0 ) if ( $read1_file eq q{} );
     pod2usage( -exitval => 8, -verbose => 0 ) if ( $directory  eq q{} );
 
-    die "Quality threshold must be between 0 and 40\n" if (($quality_threshold <0) || ($quality_threshold > 40));
-
+    die "Quality threshold must be between 0 and 40\n"
+      if ( ( $quality_threshold < 0 ) || ( $quality_threshold > 40 ) );
 
     # If directory is ., get basename of current directory
     if ( $directory eq '.' ) {
@@ -135,19 +136,25 @@ sub main {
 #############################################################################
 
     my $res_site_length = length $res_site;
-    my $mid_length      = 0;
+    my $p1mid_length    = 0;
+    my $p2mid_length    = 0;
     my %mid_pools       = ();
     my %pool_handles    = ();
 
     load_pools_and_mids( \%mid_pools, $directory, $verbose, $fuzzy_MIDs );
 
-    $mid_length =
+    my $results_ref =
       open_read_files( \%mid_pools, \%pool_handles, $directory, $fuzzy_MIDs );
+
+    $p1mid_length = $results_ref->{p1mid_length};
+    $p2mid_length = $results_ref->{p2mid_length};
 
     # Make fuzzy list of restriction enzyme sites
 
     my %fuzzy_res_sites = ();
-    make_fuzzy_seqs( $res_site, \%fuzzy_res_sites );
+    my @fuzzy_res_list  = ();
+    make_fuzzy_seqs( $res_site, \@fuzzy_res_list );
+    map { $fuzzy_res_sites{$_} = $res_site; } @fuzzy_res_list;
 
 #############################################################################
 ###
@@ -210,7 +217,8 @@ sub main {
     my $non_fastq_count        = 0;
     my $wrong_rad_format_count = 0;
     my $wrong_ressite_count    = 0;
-    my $wrong_mid_count        = 0;
+    my $wrong_p1mid_count      = 0;
+    my $wrong_p2mid_count      = 0;
     my $short_sequence_count   = 0;
 
   LOAD_ONE_SEQUENCE:
@@ -232,12 +240,18 @@ sub main {
         $record_count_total++;
         if ( ($verbose) && ( $record_count_total % 100_000 == 0 ) ) {
             printf
-"OK: %8d | Rejected %8d (FASTQ: %8d; RAD: %8d; Res: %8d; MID: %8d; Short: %8d)\n",
-              $record_count_valid, 
-              $non_fastq_count+$wrong_rad_format_count+$wrong_ressite_count+$wrong_mid_count+$short_sequence_count, 
+"OK: %8d | Rejected %8d (FASTQ: %8d; RAD: %8d; Res: %8d; P1 MID: %8d; P2 MID: %8d; Short: %8d)\n",
+              $record_count_valid,
+              $non_fastq_count +
+              $wrong_rad_format_count +
+              $wrong_ressite_count +
+              $wrong_p1mid_count +
+              $wrong_p2mid_count +
+              $short_sequence_count,
               $non_fastq_count,
               $wrong_rad_format_count,
-              $wrong_ressite_count, $wrong_mid_count, $short_sequence_count;
+              $wrong_ressite_count, $wrong_p1mid_count, $wrong_p2mid_count,
+              $short_sequence_count;
         }
 
         if ( !$pair_ref->{valid} ) {
@@ -249,8 +263,8 @@ sub main {
         }
 
         # Set trim to length of RAD sequence if not previously set
-        my $tag_length = (length $pair_ref->{r1seq}) - $mid_length;
-        if (( $trim <= 0 ) or ($trim > $tag_length)) {
+        my $tag_length = ( length $pair_ref->{r1seq} ) - $p1mid_length;
+        if ( ( $trim <= 0 ) or ( $trim > $tag_length ) ) {
             $trim = $tag_length;
         }
 
@@ -267,18 +281,18 @@ sub main {
         # Get substring of sequence of length quality_substring
         $sequence = substr( $pair_ref->{r1seq}, 0, length $quality_tail );
 
-        my $mid          = q{};    # Empty string
+        my $p1mid        = q{};    # Empty string
         my $seq_res_site = q{};
         my $dna_sequence = q{};
 
         # Find restriction enzyme site; if not found, skip sequence
         if (
-            $sequence =~ m{^([ACGTN]{$mid_length})
+            $sequence =~ m{^([ACGTN]{$p1mid_length})
                         ([ACGTN]{$res_site_length})
                         ([ACGTN\.]+)$}xms
           )
         {
-            $mid          = $1;
+            $p1mid        = $1;
             $seq_res_site = $2;
             $dna_sequence = $2 . $3;
         }
@@ -301,25 +315,42 @@ sub main {
         }
 
         # Find pool for this MID; if no pool, make pool for this MID alone
-        if ( !( exists $mid_pools{$mid} ) ) {
-
-            # Check one-base-pair variants of MID in case of sequencing error
+        if ( !( exists $mid_pools{$p1mid} ) ) {
 
             # If MID not found, reject read
-            print {$invalid_handle} 'MID is not a valid MID'
+            print {$invalid_handle} 'P1 MID is not a valid MID'
               . "                     : $pair_ref->{r1seq} $pair_ref->{r1qual} "
-              . "$mid $sequence\n"
+              . "$p1mid $sequence\n"
               or die "Can't write to $invalid_file: $OS_ERROR\n";
-            $wrong_mid_count++;
+            $wrong_p1mid_count++;
             next LOAD_ONE_SEQUENCE;
         }
-        my $pool = $mid_pools{$mid};
+
+        my $p2mid = substr( $pair_ref->{r2seq}, 0, $p2mid_length );
+
+        if ( !( exists $mid_pools{$p1mid}{$p2mid} ) ) {
+
+            # If MID not found, reject read
+            print {$invalid_handle}
+              'P2 MID is not a valid MID or does not match P1 MID'
+              . "                     : $pair_ref->{r2seq} $pair_ref->{r2qual} "
+              . "P1:$p1mid P2:$p2mid\n"
+              or die "Can't write to $invalid_file: $OS_ERROR\n";
+            $wrong_p2mid_count++;
+            next LOAD_ONE_SEQUENCE;
+
+        }
+        my $pool = $mid_pools{$p1mid}{$p2mid};
+
+        # Strip P2 MID from read 2 sequence and quality
+        $pair_ref->{r2seq}  = substr( $pair_ref->{r2seq},  $p2mid_length );
+        $pair_ref->{r2qual} = substr( $pair_ref->{r2qual}, $p2mid_length );
 
         # Increment the number of times this sequence has occurred
         if ( length($dna_sequence) >= $trim ) {
 
             # Remove MID from read 1 quality string
-            if ( $quality_tail =~ m{^(.{$mid_length})(.+)$}xms ) {
+            if ( $quality_tail =~ m{^(.{$p1mid_length})(.+)$}xms ) {
                 $quality_tail = $2;
             }
             $dna_sequence = substr $dna_sequence, 0, $trim;
@@ -430,7 +461,8 @@ sub main {
       . "$non_fastq_count records not in FASTQ format, \n"
       . "$wrong_rad_format_count records not in RAD format, \n"
       . "$wrong_ressite_count records not matching restriction enzyme site, \n"
-      . "$wrong_mid_count records not matching any listed MIDs, and \n"
+      . "$wrong_p1mid_count records not matching any listed P1 MIDs, \n"
+      . "$wrong_p2mid_count records not matching any listed P2 MIDs, and \n"
       . "$short_sequence_count records with high-quality sequences less than $trim bp long\n"
       or die "Can't write to $invalid_file: $OS_ERROR\n";
 
@@ -443,7 +475,8 @@ sub main {
           . "$non_fastq_count records not in FASTQ format, \n"
           . "$wrong_rad_format_count records not in RAD format, \n"
           . "$wrong_ressite_count records not matching restriction enzyme site, \n"
-          . "$wrong_mid_count records not matching any listed MIDs, and \n"
+          . "$wrong_p1mid_count records not matching any listed P1 MIDs, \n"
+          . "$wrong_p2mid_count records not matching any listed P2 MIDs, and \n"
           . "$short_sequence_count records with high-quality sequences less than $trim bp long\n"
           . "Done\n";
     }
@@ -458,7 +491,7 @@ sub main {
 #############################################################################
 
 sub make_fuzzy_seqs {
-    my ( $seq, $fuzzy_list_ref, $name ) = @_;
+    my ( $seq, $fuzzy_list_ref ) = @_;
     my $seq_length = length $seq;
     for my $i ( 1 .. $seq_length ) {
         for my $base (qw{A C G T N}) {
@@ -469,12 +502,7 @@ sub make_fuzzy_seqs {
            ([ACGT])
            ([ACGT]{$postbase_i})$}
            {$1$base$3}xms;
-            if ( defined $name ) {
-                push @{ $fuzzy_list_ref->{$fuzzyseq} }, $name;
-            }
-            else {
-                $fuzzy_list_ref->{$fuzzyseq} = $seq;
-            }
+            push @{$fuzzy_list_ref}, $fuzzyseq;
         }
     }
     return;
@@ -527,17 +555,39 @@ sub load_pools_and_mids {
 
             # Load MIDs into array and set up hash of MIDs for pool lookup
 
-            foreach my $mid (@pool_mid_list) {
-                if ( $mid !~ /[ACGT]+/ ) {
+            foreach my $pool_mid (@pool_mid_list) {
+                my $p1mid = $pool_mid;
+                my $p2mid = "";
+                if ( $pool_mid =~ /:/ ) {
+                    my @p1p2mids = split /:/, $pool_mid;
+                    $p1mid = $p1p2mids[0];
+                    $p2mid = $p1p2mids[1];
+                }
+
+                if (   ( $p1mid !~ /[ACGT]+/ )
+                    || ( ( $p2mid ne "" ) && ( $p2mid !~ /[ACGT]+/ ) ) )
+                {
                     print STDERR
-"Faulty MID : $pool_name $mid - MIDs must contain only ACGT\n";
+"Faulty MID : $pool_name $pool_mid - MIDs must contain only ACGT\n";
                     next;
                 }
+
+
                 if ( !$fuzzy_MIDs ) {
-                    push @{ $mid_pools_ref->{$mid} }, $pool_name;
+                    push @{ $mid_pools_ref->{$p1mid}{$p2mid} }, $pool_name;
                 }
                 else {
-                    make_fuzzy_seqs( $mid, $mid_pools_ref, $pool_name );
+                    my @p1seqs;
+                    my @p2seqs;
+                    make_fuzzy_seqs( $p1mid, \@p1seqs );
+                    make_fuzzy_seqs( $p2mid, \@p2seqs );
+                    if (@p2seqs == 0) {push @p2seqs, "";}
+                    foreach my $p1seq (@p1seqs) {
+                        foreach my $p2seq (@p2seqs) {
+                            push @{ $mid_pools_ref->{$p1seq}{$p2seq} },
+                              $pool_name;
+                        }
+                    }
                 }
             }
         }
@@ -551,41 +601,44 @@ sub load_pools_and_mids {
 sub open_read_files {
     my ( $mid_pools_ref, $pool_handles_ref, $directory, $fuzzy_MIDs ) = @_;
 
-    my $mid_length = 0;
+    my $p1mid_length = 0;
+    my $p2mid_length = 0;
 
     # Collapse lists of pools for each MID into unique, sorted, string
-    foreach my $mid ( keys %{$mid_pools_ref} ) {
-        $mid_length = length $mid;
-        my @pool_list = sort @{ $mid_pools_ref->{$mid} };
-        my $seen      = q{};
+    foreach my $p1mid ( keys %{$mid_pools_ref} ) {
+        $p1mid_length = length $p1mid;
+        foreach my $p2mid ( keys %{ $mid_pools_ref->{$p1mid} } ) {
+            $p2mid_length = length $p2mid;
+            my @pool_list = sort @{ $mid_pools_ref->{$p1mid}{$p2mid} };
+            my $seen      = q{};
 
-        # Get unique elements of list
-        @pool_list =
-          grep { ( $_ ne $seen ) && ( ($seen) = $_ ) } @pool_list;
+            # Get unique elements of list
+            @pool_list =
+              grep { ( $_ ne $seen ) && ( ($seen) = $_ ) } @pool_list;
 
-        if ( ( !$fuzzy_MIDs ) && ( @pool_list > 1 ) ) {
-            delete $mid_pools_ref->{$mid};
-        }
-        else {
-
-            my $pool_string = q{};
-
-            # Collapse list of pools
-            foreach my $pool (@pool_list) {
-                $pool_string = $pool_string . $pool . '.';
+            if ( ( !$fuzzy_MIDs ) && ( @pool_list > 1 ) ) {
+                delete $mid_pools_ref->{$p1mid}{$p2mid};
             }
+            else {
 
-            # Get rid of trailing .
-            chop $pool_string;
-            $mid_pools_ref->{$mid} = $pool_string;
+                my $pool_string = q{};
 
-            open $pool_handles_ref->{$pool_string}, '>',
-              "./$directory/$pool_string\.reads"
-              or die "Can't open output file for $pool_string: $OS_ERROR\n";
+                # Collapse list of pools
+                foreach my $pool (@pool_list) {
+                    $pool_string = $pool_string . $pool . '.';
+                }
+
+                # Get rid of trailing .
+                chop $pool_string;
+                $mid_pools_ref->{$p1mid}{$p2mid} = $pool_string;
+
+                open $pool_handles_ref->{$pool_string}, '>',
+                  "./$directory/$pool_string\.reads"
+                  or die "Can't open output file for $pool_string: $OS_ERROR\n";
+            }
         }
     }
-
-    return $mid_length;
+    return { p1mid_length => $p1mid_length, p2mid_length => $p2mid_length };
 }
 
 #############################################################################
