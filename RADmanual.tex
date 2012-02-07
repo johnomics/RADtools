@@ -1,6 +1,6 @@
 \documentclass[a4paper]{article}
 
-\title{RADtools: Software for RAD Sequencing, Version 1.2.1}
+\title{RADtools: Software for RAD Sequencing, Version 1.2.4}
 \author{John Davey\\{\tt john.davey@ed.ac.uk}}
 
 \begin{document}
@@ -16,7 +16,7 @@ The three core tools are RADpools, RADtags and RADmarkers. RADpools separates ra
 
 \section{Installation}
 
-RADtools should run on any platform that has Perl 5.10 or above available. They have been tested on Mac OS X 10.6 and Ubuntu 10.4. The tools have low memory requirements but will greatly benefit from having multiple cores available.
+RADtools should run on any platform that has Perl 5.10 or above available. They have been tested on Mac OS X 10.5 and up and Ubuntu 10.4. The tools have low memory requirements but will benefit from having multiple cores available. As they are only Perl scripts underneath, they are likely to be very slow with recent (>100m read) data sets.
 
 RADpools and RADtags process multiple pools in parallel using the CPAN module \verb|Parallel::ForkManager|. Please install this module before using RADtools. If you have configured CPAN, this should just be a case of entering
 
@@ -90,7 +90,17 @@ Reads can be rejected for several reasons:
     \item Short: high quality sequence shorter than trim length
 \end{itemize}
 
-RADpools fuzzy matches restriction sites. One basepair error is allowed, including Ns. The same can be done for MIDs using the \verb|-f| option.
+RADpools always fuzzy matches restriction sites. One basepair error is allowed, including Ns. The same can be done for MIDs using the \verb|-f| option.
+
+RADpools will process P2 MIDs (barcodes at the start of the paired end read). Specify valid P1:P2 combinations by separating them with colons:
+
+\begin{verbatim}
+    John ATATC:ATATC
+    Paul CAACT:CAACT
+    George GACTA:GACTA
+    Ringo TATAC:TATAC
+\end{verbatim}
+
 
 \subsection{Basic options}
 
@@ -112,6 +122,8 @@ RADpools can accept paired end reads with this option, eg:
     \begin{verbatim}
         RADpools -i s_1_1_sequence.fastq -d Beatles -e AATTC
     \end{verbatim}
+
+    RADpools understands IUPAC codes, so ambiguous enzymes such as SgrAI (CRCCGGYG) can be used.
 
     \item \verb|-m, --max_processes|
     
@@ -211,9 +223,11 @@ RADtags will match up files with data in this format but otherwise will process 
     \end{verbatim}
     
     \item \verb|-s, --site|
+    RADpools retains the restriction site overhang on the front of every read, as this sequence can be useful for aligning reads to a reference genome. This option is required for loading FASTQ files so that FASTQ files can be sorted correctly. By default, the restriction site is retained even after sorting; set -t to remove it.
     
-    RADpools retains the restriction site overhang on the front of every read, as this sequence can be useful for aligning reads to a reference genome. The restriction site can be removed by RADtags using this option. This option is required for loading FASTQ files so that FASTQ files can be sorted correctly. If the reads don't contain sites, please specify an empty string for this option, eg \verb|-s ''|.
-
+    \item \verb|-t, --trim_site|
+    Trims the restriction site from the start of each read.
+    
     \item \verb|-i, --illumina|
     
     By default, RADtags expects quality scores to be in fastq-sanger format. Use this option to load fastq-illumina data. Without this option, fastq-illumina data will produce incorrect output that will not be processed correctly by RADmarkers. This option is ignored if data is in `.reads' format, where Sanger qualities are assumed. Loading fastq-sanger data with this option turned on will produce incorrect output.

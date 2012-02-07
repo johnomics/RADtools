@@ -23,10 +23,12 @@
 # 05/08/10 Initial version
 # 04/11/10 1.1.1 51 tests written across all functions
 # 12/09/11 1.2.3 Added test for P2 MIDs
+# 07/02/12 1.2.4 Added test for ambiguous restriction enzymes
+
 use strict;
 use warnings;
 
-use Test::More tests => 52;
+use Test::More tests => 55;
 use Test::Trap
   qw(trap $trap :flow :stderr(systemsafe) :stdout(systemsafe) :warn :exit);
 use File::Path;
@@ -135,6 +137,20 @@ like(
     qr/2 records not matching restriction enzyme site/,
     'Reads with more than one mismatch in restriction site rejected'
 );
+
+@ARGV = ( '-iBeatles_ambiguousressite.fastq', '-dBeatles', '-v', '-eCRCCGGYG' );
+@r = trap { main() };
+like(
+    $trap->stdout,
+    qr/6 records loaded/,
+    'Reads with ambiguous restriction sites for SgrAI loaded'
+);
+like(
+    $trap->stdout,
+    qr/2 records not matching restriction enzyme site/,
+    'Reads with incorrect ambiguous restriction sites for SgrAI rejected'
+);
+
 
 @ARGV = ( '-iBeatles.fastq', '-pBeatles2.fastq', '-dBeatles_p2mids', '-v' );
 @r = trap { main() };
@@ -273,6 +289,12 @@ like(
 @r = trap { main() };
 like( $trap->stdout, qr/0 records loaded/,
     'Overlong restriction enzyme given' );
+
+@ARGV = ( '-iBeatles.fastq', '-dBeatles', '-v', '-eACGTX');
+@r = trap { main() };
+like ($trap->die, qr/Restriction enzyme must contain only IUPAC codes/, 'Reject enzymes with non-IUPAC bases');
+
+
 
 # Quality threshold is between 0 and 40
 @ARGV = ( '-iread1.fastq', '-dBeatles', '-v', '-q-1' );

@@ -19,6 +19,7 @@
 # 16/02/11 1.2   New RADmarkers output; no changes to RADtags
 # 15/05/11 1.2.1 Replace -e option with -c; process largest file first
 #                Document -v option
+# 22/11/11 1.2.3 Add -t option to trim site overhang from reads
 
 #############################################################################
 ###
@@ -50,7 +51,7 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.2.1;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.2.3;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;      # So reporting on progress works
 
 main(@ARGV) unless caller;        # So test suite can call script
@@ -73,6 +74,7 @@ sub main {
     my $site              = '-';
     my $illumina          = 0;
     my $fastq             = 0;
+    my $trim_site         = 0;
 
     my $options_okay = GetOptions(
 
@@ -87,6 +89,7 @@ sub main {
         'site|s=s'             => \$site,
         'illumina|i'           => \$illumina,
         'fastq|z'              => \$fastq,
+        'trim_site|t'          => \$trim_site,
 
         'quality_threshold|q=i' => \$quality_threshold,
         'read_threshold|r=i'    => \$read_threshold,
@@ -211,7 +214,7 @@ sub main {
             # Sort reads files
 
             $read_filename = "$directory/$sample_name\.reads";
-            my $sort_start = length($site)>1 ? length($site) : 1;
+            my $sort_start = length($site)>1 ? length($site)+1 : 1;
             sort_reads_file(
                 {
                     directory     => $directory,
@@ -235,6 +238,7 @@ sub main {
                 cluster_distance  => $cluster_distance,
                 quality_threshold => $quality_threshold,
                 read_threshold    => $read_threshold,
+                trim_site         => $trim_site,
             }
         );
         $pm->finish;
@@ -273,6 +277,7 @@ sub cluster_one_sample {
     my $cluster_distance  = $arg_ref->{cluster_distance};
     my $quality_threshold = $arg_ref->{quality_threshold};
     my $read_threshold    = $arg_ref->{read_threshold};
+    my $trim_site         = $arg_ref->{trim_site};
 
     my $first_unique;
     my $unique_hash;
@@ -292,11 +297,11 @@ sub cluster_one_sample {
     open my $in_file, '<', "$directory/$sample_name$file_extension"
       or die "Can't open $sample_name$file_extension: $OS_ERROR!";
 
-    my $first_read = get_read( $in_file, $site );
+    my $first_read = get_read( $in_file, $site, $trim_site );
     if ( defined $first_read ) {
         $read_length = length $first_read->{r1s};
         $unique_hash =
-          get_unique( $in_file, $site, $first_read, $cluster_distance );
+          get_unique( $in_file, $site, $first_read, $cluster_distance, $trim_site );
         $first_unique = $unique_hash->{uniq};
         $first_read   = $unique_hash->{read};
         push @cluster, $first_unique;
@@ -305,7 +310,7 @@ sub cluster_one_sample {
 
     my $count = 0;
     while ( $unique_hash =
-        get_unique( $in_file, $site, $first_read, $cluster_distance ) )
+        get_unique( $in_file, $site, $first_read, $cluster_distance, $trim_site ) )
     {
 
         # Exit if no good hash could be returned
@@ -388,7 +393,7 @@ sub compare_uniques {
 #############################################################################
 
 sub get_read {
-    my ( $in_file, $site ) = @_;
+    my ( $in_file, $site, $trim_site ) = @_;
 
     my $read1seq;
     my $read1qual;
@@ -407,7 +412,7 @@ sub get_read {
     $read2qual =~ s/#/!/g;
 
     # Remove restriction site if present
-    if ( $site ne '-' ) {
+    if (($trim_site) && ( $site ne '-' )) {
         if ( length($site) >= length($read1seq) ) {
             print "Site $site is longer than read $read1seq; aborting\n";
             return;
@@ -434,7 +439,7 @@ sub get_read {
 #############################################################################
 
 sub get_unique {
-    my ( $in_file, $site, $first_read, $cluster_distance ) = @_;
+    my ( $in_file, $site, $first_read, $cluster_distance, $trim_site ) = @_;
 
     my $unique_ok = 0;
     my $new_read;
@@ -447,7 +452,7 @@ sub get_unique {
         push @{ $unique->{q} }, $first_read->{r1q};
         push @{ $unique->{prs}{ $first_read->{r2s} } }, $first_read->{r2q};
 
-        while ( $new_read = get_read( $in_file, $site ) ) {
+        while ( $new_read = get_read( $in_file, $site, $trim_site ) ) {
             last if ( $new_read->{r1s} ne $unique->{seq} );
 
             $unique->{count}++;

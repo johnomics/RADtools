@@ -1,3 +1,10 @@
+1.2.4
+  RADpools
+  - Allow ambiguous IUPAC codes in restriction enzyme site (-e option). EG SgrAI (CRCCGGYG) can now be used.
+1.2.3
+  RADpools
+  - Allow P2 MIDs. Specify P1:P2 MID combinations by separating with colons in the pools file, eg
+    Parent1 AGCAT:GCAGT
 1.2.2
   RADpools
    - Allow Q=41 quality scores (Illumina i, Sanger J) following

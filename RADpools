@@ -27,6 +27,7 @@
 # 15/05/11 1.2.1 Clarify verbose output
 # 20/07/11 1.2.2 Allow Q=41 quality scores following base caller upgrade
 # 12/09/11 1.2.3 If P2 MIDs given, use them to sort reads
+# 07/02/12 1.2.4 Allow enzymes with >1 ambiguous base such as SgrAI
 
 #############################################################################
 ###
@@ -59,7 +60,7 @@ die
 # when using caller(), so using die until this is fixed
 # http://www.nntp.perl.org/group/perl.perl5.porters/2010/03/msg157461.html
 
-local $main::VERSION    = 1.2.3;    # Used by Getopt::Long to provide --version
+local $main::VERSION    = 1.2.4;    # Used by Getopt::Long to provide --version
 local $OUTPUT_AUTOFLUSH = 1;        # So reporting on progress works
 
 main(@ARGV) unless caller();        # So test suite can call script
@@ -120,6 +121,9 @@ sub main {
 
     die "Quality threshold must be between 0 and 40\n"
       if ( ( $quality_threshold < 0 ) || ( $quality_threshold > 40 ) );
+
+    die "Restriction enzyme must contain only IUPAC codes\n"
+      if ( $res_site =~ /[^ACGTRYSWKMBDHVN]/ );
 
     # If directory is ., get basename of current directory
     if ( $directory eq '.' ) {
@@ -492,20 +496,76 @@ sub main {
 
 sub make_fuzzy_seqs {
     my ( $seq, $fuzzy_list_ref ) = @_;
+
     my $seq_length = length $seq;
-    for my $i ( 1 .. $seq_length ) {
-        for my $base (qw{A C G T N}) {
-            my $fuzzyseq   = $seq;
-            my $prebase_i  = $i - 1;
-            my $postbase_i = $seq_length - $i;
-            $fuzzyseq =~ s{^([ACGT]{$prebase_i})
+
+    # Unpack IUPAC bases
+    my @unpacked_seqs;
+
+    if ($seq =~ /[RYSWKMBDHVN]/) {
+        my @bases = split //, $seq;
+        my $iupac_stubs_ref = get_unpacked_seqs(\@bases);
+        @unpacked_seqs = @{$iupac_stubs_ref};
+    }
+    else {
+        push @unpacked_seqs, $seq;
+    }
+
+    for my $unpacked_seq (@unpacked_seqs) {
+        for my $i ( 1 .. $seq_length ) {
+            for my $base (qw{A C G T N}) {
+                my $fuzzyseq   = $unpacked_seq;
+                my $prebase_i  = $i - 1;
+                my $postbase_i = $seq_length - $i;
+                $fuzzyseq =~ s{^([ACGT]{$prebase_i})
            ([ACGT])
            ([ACGT]{$postbase_i})$}
            {$1$base$3}xms;
-            push @{$fuzzy_list_ref}, $fuzzyseq;
+                push @{$fuzzy_list_ref}, $fuzzyseq;
+            }
         }
     }
     return;
+}
+
+sub get_unpacked_seqs {
+    my ($bases_ref) = @_;
+
+    my $base1 = shift @{$bases_ref};
+    
+    my @iupac_stubs;
+    @iupac_stubs = @{$bases_ref} > 0 ? @{get_unpacked_seqs($bases_ref)} : ('');
+    
+    # IUPAC code constants
+    my %iupac_codes = (
+        'A' => 'A',
+        'C' => 'C',
+        'G' => 'G',
+        'T' => 'T',
+        'R' => 'AG',
+        'Y' => 'CT',
+        'S' => 'GC',
+        'W' => 'AT',
+        'K' => 'GT',
+        'M' => 'AC',
+        'B' => 'CGT',
+        'D' => 'AGT',
+        'H' => 'ACT',
+        'V' => 'ACG',
+        'N' => 'ACGT',
+    );
+    
+    
+    my $iupac_string = $iupac_codes{$base1};
+    
+    my @unpacked_seqs;
+    for my $iupac_base (split //, $iupac_string) {
+        for my $iupac_stub (@iupac_stubs) {
+            push @unpacked_seqs, $iupac_base . $iupac_stub;
+        }
+    }
+
+    return \@unpacked_seqs;
 }
 
 sub load_pools_and_mids {
@@ -572,7 +632,6 @@ sub load_pools_and_mids {
                     next;
                 }
 
-
                 if ( !$fuzzy_MIDs ) {
                     push @{ $mid_pools_ref->{$p1mid}{$p2mid} }, $pool_name;
                 }
@@ -581,7 +640,7 @@ sub load_pools_and_mids {
                     my @p2seqs;
                     make_fuzzy_seqs( $p1mid, \@p1seqs );
                     make_fuzzy_seqs( $p2mid, \@p2seqs );
-                    if (@p2seqs == 0) {push @p2seqs, "";}
+                    if ( @p2seqs == 0 ) { push @p2seqs, ""; }
                     foreach my $p1seq (@p1seqs) {
                         foreach my $p2seq (@p2seqs) {
                             push @{ $mid_pools_ref->{$p1seq}{$p2seq} },
