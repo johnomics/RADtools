@@ -791,7 +791,7 @@ Maximum number of processes to use for sorting read pools after input files have
 
 =item B<-e, --enzyme>
 
-Sequence of cut site for used restriction enzyme (default TGCAGG, SbfI)
+Sequence of cut site for used restriction enzyme (default TGCAGG, SbfI). IUPAC codes are allowed.
 
 =item B<-q, --quality>
 

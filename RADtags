@@ -769,7 +769,11 @@ Load FASTQ data. -s must also be specified. By default, loads files ending with 
 
 =item B<-s, --site>
 
-Restriction site overhang sequence. If this sequence is present at the start of each read, it will be removed. By default, nothing is removed.
+RADpools retains the restriction site overhang on the front of every read, as this sequence can be useful for aligning reads to a reference genome. This option is required for loading FASTQ files so that FASTQ files can be sorted correctly. By default, the restriction site is retained even after sorting; set -t to remove it.
+
+=item B<-t, --trim_site>
+
+Trims the restriction site specified by -s from the start of each read.
 
 =item B<-i, --illumina>
 
